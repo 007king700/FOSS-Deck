@@ -1,0 +1,46 @@
+# ---------- OS / misc ----------
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ---------- Editors ----------
+**/.idea/
+**/.vscode/
+*.iml
+
+# ---------- Node / web ----------
+**/node_modules/
+**/dist/
+**/build/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# ---------- Rust ----------
+**/target/
+
+# ---------- Tauri Android (generated) ----------
+# Tauri's generated Android project and build outputs
+mobile/src-tauri/gen/
+mobile/src-tauri/**/.gradle/
+mobile/src-tauri/**/.externalNativeBuild/
+mobile/src-tauri/**/.cxx/
+mobile/src-tauri/**/app/build/
+
+# ---------- Android / Gradle (general safety) ----------
+**/.gradle/
+**/.externalNativeBuild/
+**/.cxx/
+**/build/
+**/captures/
+**/local.properties
+**/*.keystore
+**/*.jks
+**/*.apk
+**/*.aab
+
+# ---------- Env / secrets ----------
+*.env
+*.env.*
+!.env.example

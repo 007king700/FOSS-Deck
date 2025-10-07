@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FOSS-Deck Mobile</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 16px; }
+  .row { display:flex; gap:8px; margin-bottom:8px; flex-wrap:wrap; }
+  input { padding:8px; }
+  button { padding:10px 14px; border:0; border-radius:8px; box-shadow:0 1px 2px rgba(0,0,0,0.1); }
+  #log { background:#111; color:#0f0; padding:8px; min-height:120px; border-radius:8px; font:12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre-wrap;}
+  .ok { background:#e6ffe6; }
+  .err{ background:#ffe6e6; }
+</style>
+
+<body>
+<h2>FOSS-Deck (Android) → PC via WebSocket</h2>
+<div class="row">
+  <input id="ip" placeholder="PC IP (e.g. 192.168.1.23)" size="24" />
+  <input id="port" placeholder="Port" value="3030" size="6" />
+  <button id="connect">Connect</button>
+  <span id="status">disconnected</span>
+</div>
+
+<div class="row">
+  <button id="getStatus">Get Status</button>
+  <button id="volUp">Vol +</button>
+  <button id="volDown">Vol −</button>
+  <button id="toggleMute">Toggle Mute</button>
+</div>
+
+<div id="log"></div>
+
+<script type="module">
+  let ws = null;
+  const ipEl = document.getElementById('ip');
+  const portEl = document.getElementById('port');
+  const statusEl = document.getElementById('status');
+  const logEl = document.getElementById('log');
+
+  ipEl.value = localStorage.getItem('pc_ip') ?? ipEl.value;
+  portEl.value = localStorage.getItem('pc_port') ?? portEl.value;
+
+  function log(line, cls="") {
+    const p = document.createElement('div');
+    if (cls) p.className = cls;
+    p.textContent = line;
+    logEl.prepend(p);
+  }
+  function setStatus(s) { statusEl.textContent = s; }
+
+  function connect() {
+    const ip = ipEl.value.trim();
+    const port = portEl.value.trim();
+    if (!ip) { alert("Enter PC IP"); return; }
+    const url = `ws://${ip}:${port}/ws`;
+    localStorage.setItem('pc_ip', ip);
+    localStorage.setItem('pc_port', port);
+    log(`connecting to ${url} ...`);
+
+    try { ws?.close(); } catch {}
+    ws = new WebSocket(url);
+
+    ws.onopen = () => { setStatus('connected'); log('connected', 'ok'); };
+    ws.onmessage = (e) => { log(`← ${e.data}`); };
+    ws.onerror = (e) => { setStatus('error'); log(`error: ${e.message || e}`, 'err'); };
+    ws.onclose = () => { setStatus('disconnected'); log('closed'); };
+  }
+
+  function send(obj) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      log('not connected', 'err'); return;
+    }
+    const s = JSON.stringify(obj);
+    log(`→ ${s}`);
+    ws.send(s);
+  }
+
+  document.getElementById('connect').onclick = connect;
+  document.getElementById('getStatus').onclick = () => send({cmd:'get_status'});
+  document.getElementById('volUp').onclick     = () => send({cmd:'volume_up', delta:0.05});
+  document.getElementById('volDown').onclick   = () => send({cmd:'volume_down', delta:0.05});
+  document.getElementById('toggleMute').onclick= () => send({cmd:'toggle_mute'});
+</script>
+</body>
+</html>
