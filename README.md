@@ -1,51 +1,204 @@
-# FOSS-Deck
+**FOSS-Deck**
 
-I will get inspiration from these projects:
-### 1. [Freedeck](https://freedeck.app/)
-- Free and open-source alternative to Elgato Stream Deck.
-- Cross-platform (Windows, macOS, Linux).
-- Built using Electron and Node.js.
-- Supports customizable buttons and plugin extensions (e.g., OBS).
+An open-source, phone-based alternative to Elgato Stream Deck.
 
-### 2. [ODeck](https://github.com/willianrod/ODeck)
-- Electron + React-based customizable deck with mobile support.
-- Actions include launching apps, media control, and hotkeys.
-- Available for Android and iOS as well.
+This repo contains:
 
-### 3. [Open-Deck](https://github.com/JJetmar/open-deck)
-- Local web-based Stream Deck system using Node.js and WebSockets.
-- JSON config file for layout and function customization.
+- **pc-server/** - a Rust WebSocket server (Warp) that runs on **Windows** and can control system audio via the Windows Core Audio API.
+- **mobile/** - a **Tauri v2** app targeting **Android**. It connects to the PC over WebSocket and sends commands (e.g., volume up/down, mute).
 
-### 4. [StreamPi](https://github.com/anasancho/streampi_client)
-- Designed for Raspberry Pi with JavaFX.
-- Touchscreen-focused and compatible with OBS.
-- Platform-agnostic (Linux, Windows, macOS).
+⚠️ Security note: this is a **local-network dev build** (no TLS, no auth). Do not expose it to the public internet yet.
 
-### 5. [StreamKit](https://github.com/vinebarbosa/stream-kit)
-- Lightweight, Electron/React-based tool.
-- Still in development.
-- Includes UI/UX mockups (Figma files available).
+**What's inside**
 
----
+- **Rust** (tokio, warp, serde, anyhow, env_logger)
+- **Windows Core Audio** via windows crate (IAudioEndpointVolume)
+- **Tauri v2** for Android (JS frontend + Rust mobile core)
+- **WebSocket protocol** with simple JSON commands (snake_case)
 
-## 🛠️ Hardware-Based DIY Projects
+**Features (current)**
 
-### 6. [Stream-Deck by TheBeachLab](https://github.com/TheBeachLab/stream-deck)
-- Repurposes an old Apple keyboard into a Stream Deck via Python and udev rules.
+- WebSocket server at ws://&lt;pc-ip&gt;:3030/ws
+- Health check: http://&lt;pc-ip&gt;:3030/health → ok
+- Volume controls (master endpoint):
+  - get_status
+  - set_volume { level: 0.0..1.0 }
+  - volume_up { delta?: 0.0..1.0 } (default 0.05)
+  - volume_down { delta?: 0.0..1.0 }
+  - toggle_mute
+  - mute
+  - unmute
 
-### 7. [OpenStreamDeck](https://github.com/Mhdi-kr/openstreamdeck)
-- Arduino-based Stream Deck clone using Leonardo board.
-- Supports HID emulation, hotkey mappings, OBS integration.
-- Future goals include PCB and cross-platform software support.
+Example payloads:
 
----
+{"cmd":"get_status"}
 
-## 🧩 Technologies I Might Use
+{"cmd":"set_volume","level":0.42}
 
-- **Electron** / **Tauri**: Desktop GUI wrapper.
-- **React** or **Vue.js**: For modern frontend UI.
-- **Node.js**: Backend logic and integration scripts.
-- **Python + OpenCV**: For any camera or vision-based features.
-- **Arduino / ESP32**: For physical button integration.
-- **MQTT / WebSockets**: Communication between hardware and software.
-- **OBS WebSocket API**: To control streaming software like OBS Studio.
+{"cmd":"volume_up","delta":0.1}
+
+{"cmd":"toggle_mute"}
+
+**Repo layout**
+
+FOSS-Deck/
+
+├─ pc-server/ # Rust server (Windows-only)
+
+│ ├─ src/
+
+│ └─ Cargo.toml
+
+├─ mobile/ # Tauri v2 Android app (JS + Rust core)
+
+│ ├─ src/
+
+│ ├─ src-tauri/
+
+│ ├─ package.json
+
+│ └─ tauri.conf.json
+
+└─ README.md
+
+**Prerequisites**
+
+**Windows (for the PC server)**
+
+- **Rust** (stable):
+- winget install --id Rustlang.Rustup -e
+- **Visual Studio Build Tools + Windows SDK** (for linking & COM):
+- winget install --id Microsoft.VisualStudio.2022.BuildTools -e --interactive
+
+During the installer, select:
+
+- - **C++ build tools**
+    - **Windows 11 SDK**
+
+If you saw link.exe not found earlier, this fixes it.
+
+**Android (for the mobile app)**
+
+- **Android Studio** (Narwhal or newer) - includes SDK, Platform Tools
+- **Node.js** LTS + npm
+- Enable **Windows Developer Mode** (Settings → For developers) to allow symlinks (Tauri creates symlinks for JNI libs).
+- A device or emulator.
+
+**Getting started**
+
+**1) PC server (Windows)**
+
+cd pc-server
+
+cargo run
+
+You should see logs like:
+
+Listening on ws://0.0.0.0:3030/ws
+
+**Firewall**: Allow the app/port 3030 on your Windows firewall if prompted.
+
+**2) Mobile app (Android)**
+
+cd mobile
+
+npm install
+
+\# First time only (sets up Android bits):
+
+npm run tauri android init
+
+\# Dev run on emulator or device:
+
+npm run tauri android dev
+
+By default the app connects to your PC's IP. If you're using the **Android emulator**, use 10.0.2.2 (Android's alias for host). On a **physical device**, use the PC's LAN IP (e.g., 192.168.x.x).  
+If needed, update the connection URL in your mobile code (e.g., src/main.js) to:
+
+const WS_URL = "ws://10.0.2.2:3030/ws"; // emulator
+
+// or
+
+const WS_URL = "ws://192.168.0.109:3030/ws"; // real device on same Wi-Fi
+
+**Testing with a tiny HTML page (optional)**
+
+Create test.html on your PC and open it in a browser:
+
+&lt;!doctype html&gt;
+
+&lt;meta charset="utf-8" /&gt;
+
+&lt;button id="get"&gt;Get Status&lt;/button&gt;
+
+&lt;button id="up"&gt;Vol +&lt;/button&gt;
+
+&lt;button id="down"&gt;Vol -&lt;/button&gt;
+
+&lt;button id="mute"&gt;Toggle Mute&lt;/button&gt;
+
+&lt;pre id="log"&gt;&lt;/pre&gt;
+
+&lt;script&gt;
+
+const ws = new WebSocket("ws://localhost:3030/ws");
+
+const log = m => document.querySelector("#log").textContent += m + "\\n";
+
+ws.onopen = () => log("connected");
+
+ws.onclose = () => log("closed");
+
+ws.onerror = e => log("error " + e);
+
+ws.onmessage = ev => log("← " + ev.data);
+
+document.querySelector("#get").onclick = () => ws.send(JSON.stringify({cmd:"get_status"}));
+
+document.querySelector("#up").onclick = () => ws.send(JSON.stringify({cmd:"volume_up", delta:0.05}));
+
+document.querySelector("#down").onclick = () => ws.send(JSON.stringify({cmd:"volume_down", delta:0.05}));
+
+document.querySelector("#mute").onclick = () => ws.send(JSON.stringify({cmd:"toggle_mute"}));
+
+&lt;/script&gt;
+
+**Common pitfalls**
+
+- **"Connection header did not include 'upgrade'"**  
+    You're hitting the HTTP endpoint with fetch/XHR. Use a **WebSocket** (new WebSocket("ws://...")) and the /ws path.
+- **Emulator can't reach the PC**  
+    Use ws://10.0.2.2:3030/ws. That's Android's host alias.
+- **Physical device can't reach the PC**  
+    Ensure both are on the same Wi-Fi, use your PC's LAN IP, and allow Windows Firewall on port **3030**.
+- **"invalid json: unknown variant … get_status"**  
+    The server expects **snake_case** commands. Confirm enum has  
+    #\[serde(tag = "cmd", rename_all = "snake_case")\].
+- **Symlink error on Windows during Android dev**  
+    Enable **Developer Mode** on Windows.
+
+**Building release binaries**
+
+**PC server**
+
+cd pc-server
+
+cargo build --release
+
+\# target\\release\\pc-server.exe
+
+**Android (APK)**
+
+From mobile/:
+
+npm run tauri android build
+
+\# The signed/release flow depends on your keystore; for dev, you'll get a debug APK.
+
+**Next steps (roadmap ideas)**
+
+- Secure pairing (shared secret / QR), TLS
+- More actions: app launching, hotkeys, OBS/Spotify integrations
+- Cross-platform server (Windows/macOS/Linux; Linux via PipeWire/PulseAudio)
+- Customizable buttons/layout on mobile UI
+- Discovery / mDNS instead of manual IP entry
