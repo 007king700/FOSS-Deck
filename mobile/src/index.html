@@ -1,86 +1,105 @@
 <!doctype html>
 <html lang="en">
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>FOSS-Deck Mobile</title>
-<style>
-  body { font-family: system-ui, sans-serif; margin: 16px; }
-  .row { display:flex; gap:8px; margin-bottom:8px; flex-wrap:wrap; }
-  input { padding:8px; }
-  button { padding:10px 14px; border:0; border-radius:8px; box-shadow:0 1px 2px rgba(0,0,0,0.1); }
-  #log { background:#111; color:#0f0; padding:8px; min-height:120px; border-radius:8px; font:12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space:pre-wrap;}
-  .ok { background:#e6ffe6; }
-  .err{ background:#ffe6e6; }
-</style>
-
+<head>
+  <meta charset="UTF-8" />
+  <meta
+          name="viewport"
+          content="width=device-width, initial-scale=1, maximum-scale=1"
+  />
+  <title>FOSS-Deck Mobile</title>
+  <style>
+    :root { --bg:#0b0e14; --panel:#121722; --muted:#8a98b5; --text:#e6edf3; --acc:#4aa3ff; --ok:#26d07c; --err:#ff5c5c; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; background:var(--bg); color:var(--text); }
+    header { padding:16px 18px; background:linear-gradient(180deg,#101524,#0c1220); border-bottom:1px solid #1e2433; position:sticky; top:0; z-index:5; }
+    h1 { font-size:18px; margin:0 0 2px; }
+    .sub { color:var(--muted); font-size:12px; }
+    main { padding:16px; display:grid; gap:14px; }
+    .card { background:var(--panel); border:1px solid #1b2233; border-radius:12px; padding:12px; }
+    .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+    input[type="text"] { flex:1; min-width:220px; padding:10px 12px; border-radius:10px; border:1px solid #24304a; background:#0e1422; color:var(--text); outline:none; }
+    button { padding:10px 12px; border-radius:10px; border:1px solid #24304a; background:#0f1a2e; color:var(--text); cursor:pointer; }
+    button.primary { background:#0a2346; border-color:#183a6c; }
+    button:disabled { opacity:.55; cursor:not-allowed; }
+    .hint { color:var(--muted); font-size:12px; margin-top:8px; }
+    .hosts { display:grid; gap:8px; margin-top:8px; }
+    .host { display:flex; justify-content:space-between; align-items:center; padding:10px 12px; border:1px solid #22304a; border-radius:10px; background:#0e1524; }
+    .host .name { font-weight:600; }
+    .host .url { color:var(--muted); font-size:12px; }
+    .status { font-size:13px; padding:8px 10px; border-radius:8px; background:#0d1627; border:1px solid #22304a; }
+    .status.ok { border-color:#204f3c; }
+    .status.err { border-color:#50303a; }
+    .controls { display:grid; gap:10px; grid-template-columns:repeat(2,1fr); }
+    .controls button { width:100%; }
+    .slider-row { display:flex; gap:10px; align-items:center; }
+    input[type="range"] { width:100%; }
+    #log { font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:12px; max-height:180px; overflow:auto; background:#0a1020; border:1px solid #1b2233; border-radius:10px; padding:10px; white-space:pre-wrap; }
+    .mini { font-size:11px; color:var(--muted); }
+    .spacer { height:8px; }
+  </style>
+</head>
 <body>
-<h2>FOSS-Deck (Android) → PC via WebSocket</h2>
-<div class="row">
-  <input id="ip" placeholder="PC IP (e.g. 192.168.1.23)" size="24" />
-  <input id="port" placeholder="Port" value="3030" size="6" />
-  <button id="connect">Connect</button>
-  <span id="status">disconnected</span>
-</div>
+<header>
+  <h1>FOSS-Deck Mobile</h1>
+  <div class="sub">Find and control your PC server over LAN</div>
+</header>
 
-<div class="row">
-  <button id="getStatus">Get Status</button>
-  <button id="volUp">Vol +</button>
-  <button id="volDown">Vol −</button>
-  <button id="toggleMute">Toggle Mute</button>
-</div>
+<main>
+  <!-- Discovery -->
+  <section class="card">
+    <div class="row">
+      <button id="scan" class="primary">🔎 Scan LAN</button>
+      <span id="scanStatus" class="mini">Idle</span>
+    </div>
+    <div class="hint">
+      Works on real devices on the same Wi-Fi. Emulators usually can’t broadcast; use manual connect below.
+    </div>
+    <div id="hosts" class="hosts"></div>
+  </section>
 
-<div id="log"></div>
+  <!-- Manual connect -->
+  <section class="card">
+    <div class="row">
+      <input id="wsUrl" type="text" placeholder="ws://&lt;pc-ip&gt;:3030/ws" />
+      <button id="useEmu">Use 10.0.2.2</button>
+      <button id="connect" class="primary">Connect</button>
+      <button id="disconnect">Disconnect</button>
+    </div>
+    <div class="hint">
+      Tip: on Windows + Android emulator, host is <code>10.0.2.2</code>. On a real phone, use your PC’s Wi-Fi IP.
+    </div>
+    <div class="spacer"></div>
+    <div id="connStatus" class="status">Disconnected</div>
+  </section>
 
-<script type="module">
-  let ws = null;
-  const ipEl = document.getElementById('ip');
-  const portEl = document.getElementById('port');
-  const statusEl = document.getElementById('status');
-  const logEl = document.getElementById('log');
+  <!-- Controls -->
+  <section class="card">
+    <div class="slider-row">
+      <label for="vol">Volume</label>
+      <input id="vol" type="range" min="0" max="1" step="0.01" />
+      <span id="volVal" class="mini">--%</span>
+    </div>
+    <div class="controls">
+      <button id="volUp">Vol +</button>
+      <button id="volDown">Vol −</button>
+      <button id="mute">Mute</button>
+      <button id="unmute">Unmute</button>
+      <button id="toggleMute">Toggle mute</button>
+      <button id="getStatus">Get status</button>
+    </div>
+  </section>
 
-  ipEl.value = localStorage.getItem('pc_ip') ?? ipEl.value;
-  portEl.value = localStorage.getItem('pc_port') ?? portEl.value;
+  <!-- Log -->
+  <section class="card">
+    <div class="row" style="justify-content: space-between;">
+      <div>Log</div>
+      <button id="clearLog">Clear</button>
+    </div>
+    <div id="log"></div>
+  </section>
+</main>
 
-  function log(line, cls="") {
-    const p = document.createElement('div');
-    if (cls) p.className = cls;
-    p.textContent = line;
-    logEl.prepend(p);
-  }
-  function setStatus(s) { statusEl.textContent = s; }
-
-  function connect() {
-    const ip = ipEl.value.trim();
-    const port = portEl.value.trim();
-    if (!ip) { alert("Enter PC IP"); return; }
-    const url = `ws://${ip}:${port}/ws`;
-    localStorage.setItem('pc_ip', ip);
-    localStorage.setItem('pc_port', port);
-    log(`connecting to ${url} ...`);
-
-    try { ws?.close(); } catch {}
-    ws = new WebSocket(url);
-
-    ws.onopen = () => { setStatus('connected'); log('connected', 'ok'); };
-    ws.onmessage = (e) => { log(`← ${e.data}`); };
-    ws.onerror = (e) => { setStatus('error'); log(`error: ${e.message || e}`, 'err'); };
-    ws.onclose = () => { setStatus('disconnected'); log('closed'); };
-  }
-
-  function send(obj) {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      log('not connected', 'err'); return;
-    }
-    const s = JSON.stringify(obj);
-    log(`→ ${s}`);
-    ws.send(s);
-  }
-
-  document.getElementById('connect').onclick = connect;
-  document.getElementById('getStatus').onclick = () => send({cmd:'get_status'});
-  document.getElementById('volUp').onclick     = () => send({cmd:'volume_up', delta:0.05});
-  document.getElementById('volDown').onclick   = () => send({cmd:'volume_down', delta:0.05});
-  document.getElementById('toggleMute').onclick= () => send({cmd:'toggle_mute'});
-</script>
+<!-- IMPORTANT: use a relative path so Android loads it -->
+<script type="module" src="./main.js"></script>
 </body>
 </html>
