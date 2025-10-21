@@ -1,31 +1,40 @@
-use std::net::Ipv4Addr;
-use std::time::{Duration, Instant};
+// src/gui.rs
+#![cfg(windows)]
 
+use env_logger;
 use log::info;
 use tokio::{runtime::Runtime, sync::oneshot};
 
-use crate::audio;
-use crate::server::run_ws_server;
 use crate::discovery::run_discovery_server;
+use crate::server::run_ws_server;
 
-pub fn run() -> Result<(), eframe::Error> {
+const PORT: u16 = 3030; // hardcoded port
+
+pub fn run_gui() {
+    env_logger::init();
     let options = eframe::NativeOptions::default();
-    eframe::run_native("FOSS-Deck PC", options, Box::new(|_cc| Box::new(App::new())))
+
+    if let Err(e) = eframe::run_native(
+        "FOSS-Deck PC",
+        options,
+        Box::new(|_cc| Box::new(App::new())),
+    ) {
+        eprintln!("GUI failed to start: {e}");
+    }
 }
 
-// ----------------------------- GUI APP -----------------------------
 struct App {
-    // server
     rt: Runtime,
-    port: u16,
-    server_running: bool,
-    shutdown_tx: Vec<oneshot::Sender<()>>,
-    last_status: String,
 
-    // audio
-    volume: f32,
-    muted: bool,
-    last_refresh: Instant,
+    // toggles
+    server_on: bool,
+    discovery_on: bool,
+
+    // channels
+    server_tx: Option<oneshot::Sender<()>>,
+    discovery_tx: Option<oneshot::Sender<()>>,
+
+    last_status: String,
 }
 
 impl App {
@@ -35,115 +44,98 @@ impl App {
             .build()
             .unwrap();
 
-        let (vol, muted) = audio::get_volume_and_mute().unwrap_or((0.5, false));
         Self {
             rt,
-            port: 3030,
-            server_running: false,
-            shutdown_tx: Vec::new(),
-            last_status: String::from("stopped"),
-            volume: vol,
-            muted,
-            last_refresh: Instant::now(),
+            server_on: false,
+            discovery_on: false,
+            server_tx: None,
+            discovery_tx: None,
+            last_status: "Idle".into(),
         }
     }
 
     fn start_server(&mut self) {
-        if self.server_running {
+        if self.server_on {
             return;
         }
-        let port = self.port;
-        let (tx1, rx1) = oneshot::channel::<()>();
-        let (tx2, rx2) = oneshot::channel::<()>();
-        self.shutdown_tx = vec![tx1, tx2];
 
-        self.rt.spawn(async move { let _ = run_ws_server(port, rx1).await; });
-        self.rt.spawn(async move { let _ = run_discovery_server(port, rx2).await; });
+        let (tx, rx) = oneshot::channel::<()>();
+        self.server_tx = Some(tx);
 
-        self.server_running = true;
-        self.last_status = format!("listening on ws://0.0.0.0:{}/ws", port);
+        self.rt.spawn(async move {
+            let _ = run_ws_server(PORT, rx).await;
+        });
+
+        self.server_on = true;
+        self.last_status = format!("Server running on ws://0.0.0.0:{}/ws", PORT);
         info!("{}", self.last_status);
     }
 
     fn stop_server(&mut self) {
-        for tx in self.shutdown_tx.drain(..) {
+        if let Some(tx) = self.server_tx.take() {
             let _ = tx.send(());
         }
-        self.server_running = false;
-        self.last_status = "stopped".into();
-        info!("server stopped");
+        self.server_on = false;
+        self.last_status = "Server stopped".into();
+        self.stop_discovery();
+        info!("{}", self.last_status);
     }
 
-    fn refresh_audio(&mut self) {
-        if let Ok((v, m)) = audio::get_volume_and_mute() {
-            self.volume = v;
-            self.muted = m;
+    fn start_discovery(&mut self) {
+        if self.discovery_on {
+            return;
         }
+
+        let (tx, rx) = oneshot::channel::<()>();
+        self.discovery_tx = Some(tx);
+
+        self.rt.spawn(async move {
+            let _ = run_discovery_server(PORT, rx).await;
+        });
+
+        self.discovery_on = true;
+        info!("Discovery enabled");
+    }
+
+    fn stop_discovery(&mut self) {
+        if let Some(tx) = self.discovery_tx.take() {
+            let _ = tx.send(());
+        }
+        self.discovery_on = false;
+        info!("Discovery disabled");
     }
 }
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // auto refresh audio status every 1s
-        if self.last_refresh.elapsed() > Duration::from_secs(1) {
-            self.refresh_audio();
-            self.last_refresh = Instant::now();
-            ctx.request_repaint();
-        }
-
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.heading("FOSS-Deck PC");
-            ui.label("Minimal control panel");
+            ui.label("Service Control Panel");
         });
 
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                ui.label("Port:");
-                let mut port_str = self.port.to_string();
-                if ui.text_edit_singleline(&mut port_str).lost_focus() {
-                    if let Ok(p) = port_str.parse::<u16>() {
-                        self.port = p;
-                    }
-                }
-
-                if !self.server_running {
-                    if ui.button("Start server").clicked() {
-                        self.start_server();
-                    }
-                } else if ui.button("Stop server").clicked() {
+            // --- Service toggle ---
+            let mut srv = self.server_on;
+            if ui.checkbox(&mut srv, "Enable WebSocket Server").changed() {
+                if srv {
+                    self.start_server();
+                } else {
                     self.stop_server();
                 }
+            }
 
-                if ui.button("Copy WS URL").clicked() {
-                    let url = format!("ws://{}:{}/ws", Ipv4Addr::UNSPECIFIED, self.port);
-                    ui.output_mut(|o| o.copied_text = url);
+            // --- Discovery toggle (independent from server) ---
+            let mut disc = self.discovery_on;
+            if ui.checkbox(&mut disc, "Enable Discoverability").changed() && self.server_on {
+                if disc {
+                    self.start_discovery();
+                } else {
+                    self.stop_discovery();
                 }
-            });
+            }
 
             ui.separator();
-            ui.label(format!("Server status: {}", self.last_status));
-
-            ui.separator();
-            ui.heading("Audio");
-
-            let mut vol = self.volume;
-            if ui.add(egui::Slider::new(&mut vol, 0.0..=1.0).text("Master volume")).changed() {
-                self.volume = vol.clamp(0.0, 1.0);
-                let _ = audio::set_volume(self.volume);
-            }
-
-            let mut m = self.muted;
-            if ui.checkbox(&mut m, "Muted").changed() {
-                self.muted = m;
-                let _ = audio::set_mute(self.muted);
-            }
-
-            if ui.button("Refresh").clicked() {
-                self.refresh_audio();
-            }
-
-            ui.add_space(8.0);
-            ui.small("Tip: Android client can connect to ws://<your-pc-ip>:<port>/ws");
+            ui.label(format!("Status: {}", self.last_status));
         });
     }
 }

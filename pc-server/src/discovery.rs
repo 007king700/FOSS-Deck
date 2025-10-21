@@ -1,5 +1,6 @@
 use anyhow::Result;
 use tokio::sync::oneshot;
+use whoami::fallible;
 
 pub async fn run_discovery_server(ws_port: u16, mut shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
     use log::{error, info};
@@ -22,8 +23,9 @@ pub async fn run_discovery_server(ws_port: u16, mut shutdown_rx: oneshot::Receiv
                     Ok((n, peer)) => {
                         let msg = std::str::from_utf8(&buf[..n]).unwrap_or_default();
                         if msg == QUERY {
+                            let name = fallible::hostname().unwrap_or_else(|_| "unknown".to_string());
                             let reply = json!({
-                                "name": whoami::hostname(),  // add `whoami` crate if you like
+                                "name": name,
                                 "proto": "ws",
                                 "port": ws_port,
                                 "path": "/ws",

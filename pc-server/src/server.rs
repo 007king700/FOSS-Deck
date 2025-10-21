@@ -1,84 +1,15 @@
+// src/server.rs
 use anyhow::Result;
 use futures::{SinkExt, StreamExt};
 use log::{error, info};
 use serde::Deserialize;
 use serde_json::json;
-use tokio::sync::oneshot;
-use warp::http::StatusCode;
+use tokio::{select, sync::oneshot};
+use tokio_util::sync::CancellationToken;
 use warp::ws::{Message, WebSocket};
-use warp::Filter;
+use warp::{Filter, http::StatusCode};
 
 use crate::audio;
-
-pub async fn run_ws_server(port: u16, shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
-    // Health: box the reply
-    let health = warp::path!("health")
-        .map(|| warp::reply::with_status("ok", StatusCode::OK))
-        .boxed();
-
-    // WebSocket route: box it
-    let ws_route = warp::path!("ws")
-        .and(warp::ws())
-        .map(|ws: warp::ws::Ws| ws.on_upgrade(handle_ws))
-        .boxed();
-
-    // Combine and box the whole thing
-    let routes = health
-        .or(ws_route)
-        .with(warp::cors().allow_any_origin())
-        .with(warp::log("pc_remote_ws"))
-        .boxed();
-
-    let addr = ([0, 0, 0, 0], port);
-    info!("Listening on ws://{}:{}/ws", "0.0.0.0", port);
-
-    warp::serve(routes)
-        .bind_with_graceful_shutdown(addr, async move {
-            let _ = shutdown_rx.await;
-        })
-        .1
-        .await;
-
-    Ok(())
-}
-
-async fn handle_ws(ws: WebSocket) {
-    let (mut tx, mut rx) = ws.split();
-
-    // welcome message
-    if let Err(e) = tx
-        .send(Message::text(
-            json!({
-                "type": "hello",
-                "server": "pc-remote-ws",
-                "version": "0.1.0",
-                "hint": "send JSON like {\"cmd\":\"get_status\"} / {\"cmd\":\"volume_up\",\"delta\":0.05}"
-            })
-                .to_string(),
-        ))
-        .await
-    {
-        error!("Failed to send welcome: {e}");
-        return;
-    }
-
-    while let Some(Ok(msg)) = rx.next().await {
-        if !msg.is_text() {
-            continue;
-        }
-        let text = msg.to_str().unwrap_or_default();
-
-        let reply = match serde_json::from_str::<WsCommand>(text) {
-            Ok(cmd) => handle_command(cmd).unwrap_or_else(|e| json!({"type":"error","message":e.to_string()})),
-            Err(e) => json!({"type":"error","message":format!("invalid json: {e}")}),
-        };
-
-        if let Err(e) = tx.send(Message::text(reply.to_string())).await {
-            error!("Failed to send response: {e}");
-            break;
-        }
-    }
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
@@ -90,6 +21,106 @@ enum WsCommand {
     ToggleMute,
     Mute,
     Unmute,
+}
+
+pub async fn run_ws_server(port: u16, shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
+    let cancel = CancellationToken::new();
+    let cancel_filter = warp::any().map({
+        let cancel = cancel.clone();
+        move || cancel.clone()
+    });
+
+    // Health endpoint
+    let health = warp::path!("health")
+        .map(|| warp::reply::with_status("ok", StatusCode::OK))
+        .boxed();
+
+    // WebSocket endpoint
+    let ws_route = warp::path!("ws")
+        .and(warp::ws())
+        .and(cancel_filter)
+        .map(|ws: warp::ws::Ws, cancel: CancellationToken| {
+            ws.on_upgrade(move |socket| async move {
+                handle_ws(socket, cancel).await;
+            })
+        })
+        .boxed();
+
+    // Combine routes
+    let routes = health
+        .or(ws_route)
+        .with(warp::cors().allow_any_origin())
+        .with(warp::log("fossdeck_ws"))
+        .boxed();
+
+    let addr = ([0, 0, 0, 0], port);
+    info!("Listening on ws://0.0.0.0:{port}/ws");
+
+    let cancel_for_shutdown = cancel.clone();
+
+    warp::serve(routes)
+        .bind_with_graceful_shutdown(addr, async move {
+            let _ = shutdown_rx.await;
+            info!("Graceful shutdown signal received — closing all clients...");
+            cancel_for_shutdown.cancel();
+        })
+        .1
+        .await;
+
+    Ok(())
+}
+
+async fn handle_ws(ws: WebSocket, cancel: CancellationToken) {
+    let (mut tx, mut rx) = ws.split();
+
+    // Send welcome message
+    if let Err(e) = tx
+        .send(Message::text(
+            json!({
+                "type": "hello",
+                "server": "foss-deck",
+                "version": "0.1.0",
+                "hint": "send JSON like {\"cmd\":\"get_status\"} / {\"cmd\":\"set_volume\",\"level\":0.5}"
+            })
+                .to_string(),
+        ))
+        .await
+    {
+        error!("Failed to send hello: {e}");
+        return;
+    }
+
+    loop {
+        select! {
+            _ = cancel.cancelled() => {
+                let _ = tx.send(Message::text(json!({"type":"shutdown","message":"server stopped"}).to_string())).await;
+                let _ = tx.close().await;
+                break;
+            }
+            maybe_msg = rx.next() => {
+                match maybe_msg {
+                    Some(Ok(msg)) if msg.is_text() => {
+                        let text = msg.to_str().unwrap_or_default();
+                        let reply = match serde_json::from_str::<WsCommand>(text) {
+                            Ok(cmd) => handle_command(cmd).unwrap_or_else(|e| json!({"type":"error","message":e.to_string()})),
+                            Err(e) => json!({"type":"error","message":format!("invalid json: {e}")}),
+                        };
+
+                        if let Err(e) = tx.send(Message::text(reply.to_string())).await {
+                            error!("Failed to send response: {e}");
+                            break;
+                        }
+                    }
+                    Some(Ok(_)) => { /* ignore binary */ }
+                    Some(Err(e)) => {
+                        error!("WebSocket error: {e}");
+                        break;
+                    }
+                    None => break, // client disconnected
+                }
+            }
+        }
+    }
 }
 
 fn handle_command(cmd: WsCommand) -> anyhow::Result<serde_json::Value> {
