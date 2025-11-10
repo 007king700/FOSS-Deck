@@ -1,5 +1,4 @@
-// Avoid ESM import for Tauri API on Android;
-// use the injected global instead. If it doesn't exist, we degrade gracefully.
+// Use Tauri API if available (Android injects __TAURI__)
 const tauriCore = (globalThis.__TAURI__ && globalThis.__TAURI__.core) || null;
 const invoke = tauriCore
     ? tauriCore.invoke
@@ -7,26 +6,28 @@ const invoke = tauriCore
 
 const $ = (id) => document.getElementById(id);
 
-// Elements
+// Sections
+const connectSection = $("connectSection");
+const controlsSection = $("controlsSection");
+
+// Connect UI
 const scanBtn = $("scan");
+const directBtn = $("direct");
 const scanStatus = $("scanStatus");
 const hostsEl = $("hosts");
 
-const wsUrlInput = $("wsUrl");
-const useEmuBtn = $("useEmu");
-const connectBtn = $("connect");
-const disconnectBtn = $("disconnect");
+// Controls UI
 const connStatus = $("connStatus");
-
 const volSlider = $("vol");
 const volVal = $("volVal");
 const volUpBtn = $("volUp");
 const volDownBtn = $("volDown");
-const muteBtn = $("mute");
-const unmuteBtn = $("unmute");
 const toggleMuteBtn = $("toggleMute");
+const muteStatus = $("muteStatus");
 const getStatusBtn = $("getStatus");
+const disconnectBtn = $("disconnect");
 
+// Log
 const logEl = $("log");
 const clearLogBtn = $("clearLog");
 
@@ -34,33 +35,26 @@ const clearLogBtn = $("clearLog");
 let ws = null;
 let volumeDebounce = null;
 
-// ----- Helpers -----
+// ---------- Helpers ----------
 function log(line, kind = "info") {
-  const time = new Date().toLocaleTimeString();
+  const ts = new Date().toLocaleTimeString();
   const prefix = kind === "err" ? "❌" : kind === "ok" ? "✅" : "•";
-  logEl.textContent += `[${time}] ${prefix} ${line}\n`;
+  logEl.textContent += `[${ts}] ${prefix} ${line}\n`;
   logEl.scrollTop = logEl.scrollHeight;
 }
 
-function setConnectedUI(connected, url = null) {
+function setMode(connected) {
+  // swap sections
+  connectSection.classList.toggle("hidden", connected);
+  controlsSection.classList.toggle("hidden", !connected);
+
   if (connected) {
-    connStatus.textContent = `Connected ${url ? `to ${url}` : ""}`;
-    connStatus.classList.remove("err");
     connStatus.classList.add("ok");
+    connStatus.classList.remove("err");
   } else {
-    connStatus.textContent = "Disconnected";
     connStatus.classList.remove("ok");
     connStatus.classList.remove("err");
   }
-
-  connectBtn.disabled = connected;
-  disconnectBtn.disabled = !connected;
-
-  const controls = [
-    volSlider, volUpBtn, volDownBtn, muteBtn, unmuteBtn, toggleMuteBtn,
-    getStatusBtn
-  ];
-  for (const el of controls) el.disabled = !connected;
 }
 
 function setStatusError(msg) {
@@ -75,8 +69,7 @@ function applyStatus({ volume, muted }) {
     volVal.textContent = `${Math.round(volume * 100)}%`;
   }
   if (typeof muted === "boolean") {
-    const base = `Connected${muted ? " (muted)" : ""}`;
-    connStatus.textContent = base;
+    muteStatus.textContent = muted ? "Muted" : "Not muted";
   }
 }
 
@@ -85,23 +78,45 @@ function buildWsUrlFromHost(h) {
   return `ws://${h.ip}:${h.port}${path}`;
 }
 
-// ----- Discovery -----
+function normalizeDirectInputToWs(input) {
+  // Accept:
+  // - ws://host[:port]/ws
+  // - wss://host...
+  // - 192.168.1.42            -> ws://192.168.1.42:3030/ws
+  // - 192.168.1.42:3031       -> ws://192.168.1.42:3031/ws
+  const raw = input.trim();
+  if (raw.startsWith("ws://") || raw.startsWith("wss://")) return raw;
+
+  // naive IP[:port]
+  const m = raw.match(/^(\d{1,3}(?:\.\d{1,3}){3})(?::(\d{1,5}))?$/);
+  if (m) {
+    const ip = m[1];
+    const port = m[2] ? Number(m[2]) : 3030;
+    return `ws://${ip}:${port}/ws`;
+  }
+  return ""; // invalid
+}
+
+// ---------- Discovery ----------
 scanBtn.addEventListener("click", async () => {
   if (!tauriCore) {
-    scanStatus.textContent = "Unavailable (no Tauri core)";
-    log("Scan blocked: Tauri API not available", "err");
+    scanStatus.textContent = "Scan disabled (no Tauri API)";
+    log("Tauri API not available for discovery", "err");
     return;
   }
 
   hostsEl.innerHTML = "";
   scanBtn.disabled = true;
-  scanStatus.textContent = "Scanning...";
+  scanStatus.textContent = "Scanning…";
+
   try {
+    // lib.rs command: discover_hosts(timeout_ms?: u64)
     const hosts = await invoke("discover_hosts", { timeoutMs: 1200 });
     if (!hosts || hosts.length === 0) {
       scanStatus.textContent = "No PCs found.";
       return;
     }
+
     scanStatus.textContent = `Found ${hosts.length} host(s)`;
     hostsEl.innerHTML = hosts.map(h => {
       const url = buildWsUrlFromHost(h);
@@ -120,13 +135,8 @@ scanBtn.addEventListener("click", async () => {
 
     for (const btn of hostsEl.querySelectorAll("button[data-url]")) {
       btn.addEventListener("click", () => {
-        wsUrlInput.value = btn.dataset.url;
-        connect();
+        connect(btn.dataset.url);
       });
-    }
-
-    if (hosts.length === 1) {
-      wsUrlInput.value = buildWsUrlFromHost(hosts[0]);
     }
   } catch (e) {
     scanStatus.textContent = "Scan failed";
@@ -136,31 +146,32 @@ scanBtn.addEventListener("click", async () => {
   }
 });
 
-// ----- Manual connect / emulator helper -----
-useEmuBtn.addEventListener("click", () => {
-  wsUrlInput.value = "ws://10.0.2.2:3030/ws";
-});
-
-connectBtn.addEventListener("click", connect);
-disconnectBtn.addEventListener("click", disconnect);
-
-function connect() {
-  const url = wsUrlInput.value.trim();
-  if (!url.startsWith("ws://") && !url.startsWith("wss://")) {
-    setStatusError("Invalid URL (must start with ws:// or wss://)");
+// ---------- Direct connect prompt ----------
+directBtn.addEventListener("click", () => {
+  const v = prompt("Enter PC IP (or IP:port) or full ws:// URL:", "");
+  if (v === null) return; // canceled
+  const url = normalizeDirectInputToWs(v);
+  if (!url) {
+    log("Invalid address. Use IP (e.g. 192.168.0.10) or ws:// URL.", "err");
     return;
   }
+  connect(url);
+});
+
+// ---------- WebSocket ----------
+function connect(url) {
   try {
     if (ws) {
       try { ws.close(); } catch {}
       ws = null;
     }
-    log(`Connecting to ${url} ...`);
+    log(`Connecting to ${url} …`);
     ws = new WebSocket(url);
 
     ws.onopen = () => {
       log("WebSocket open", "ok");
-      setConnectedUI(true, url);
+      setMode(true);
+      connStatus.textContent = `Connected to ${url}`;
       sendCmd({ cmd: "get_status" });
     };
 
@@ -168,33 +179,40 @@ function connect() {
       const data = ev.data;
       try {
         const obj = JSON.parse(data);
-        if (obj.type === "status") {
+        if (obj.type === "hello") {
+          log(`Hello from ${obj.server} v${obj.version}`);
+        } else if (obj.type === "status") {
           applyStatus(obj);
-          log(`Status: vol=${Math.round(obj.volume * 100)}% mute=${obj.muted ? "on" : "off"}`);
-        } else if (obj.type === "hello") {
-          log(`Server hello: ${obj.server} v${obj.version}`);
+          log(
+              `Status: vol=${Math.round(obj.volume * 100)}% mute=${obj.muted ? "on" : "off"}`
+          );
         } else if (obj.type === "ok") {
           if (typeof obj.volume === "number") applyStatus(obj);
           log(`OK: ${obj.action ?? ""}`);
+        } else if (obj.type === "shutdown") {
+          // Server told us it's going down; close locally.
+          log("Server shutdown — disconnecting");
+          try { ws.close(); } catch {}
         } else if (obj.type === "error") {
           setStatusError(`Server error: ${obj.message}`);
-          log(`Error from server: ${obj.message}`, "err");
+          log(`Server error: ${obj.message}`, "err");
         } else {
-          log(`Msg: ${String(data).slice(0, 200)}`);
+          log(`Message: ${String(data).slice(0, 200)}`);
         }
       } catch {
-        log(`Non-JSON msg: ${String(data).slice(0, 200)}`, "err");
+        log(`Non-JSON message: ${String(data).slice(0, 200)}`, "err");
       }
     };
 
-    ws.onerror = (ev) => {
+    ws.onerror = () => {
       setStatusError("WebSocket error");
-      log(`WS error: ${JSON.stringify(ev)}`, "err");
+      log("WebSocket error", "err");
     };
 
     ws.onclose = () => {
       log("WebSocket closed");
-      setConnectedUI(false);
+      setMode(false);
+      connStatus.textContent = "Disconnected";
     };
   } catch (e) {
     setStatusError("Connect failed");
@@ -207,11 +225,14 @@ function disconnect() {
     try { ws.close(); } catch {}
     ws = null;
   }
-  setConnectedUI(false);
+  setMode(false);
+  connStatus.textContent = "Disconnected";
   log("Disconnected");
 }
 
-// ----- Commands -----
+disconnectBtn.addEventListener("click", disconnect);
+
+// ---------- Commands ----------
 function sendCmd(obj) {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     setStatusError("Not connected");
@@ -226,12 +247,10 @@ function sendCmd(obj) {
 
 volUpBtn.addEventListener("click", () => sendCmd({ cmd: "volume_up", delta: 0.05 }));
 volDownBtn.addEventListener("click", () => sendCmd({ cmd: "volume_down", delta: 0.05 }));
-muteBtn.addEventListener("click", () => sendCmd({ cmd: "mute" }));
-unmuteBtn.addEventListener("click", () => sendCmd({ cmd: "unmute" }));
 toggleMuteBtn.addEventListener("click", () => sendCmd({ cmd: "toggle_mute" }));
 getStatusBtn.addEventListener("click", () => sendCmd({ cmd: "get_status" }));
 
-// Debounce set_volume while dragging the slider
+// Debounce set_volume while dragging
 volSlider.addEventListener("input", () => {
   const level = parseFloat(volSlider.value);
   volVal.textContent = `${Math.round(level * 100)}%`;
@@ -241,15 +260,13 @@ volSlider.addEventListener("input", () => {
   }, 120);
 });
 
-// ----- Log -----
+// ---------- Log ----------
 clearLogBtn.addEventListener("click", () => (logEl.textContent = ""));
 
-// ----- Init -----
+// ---------- Init ----------
 (function init() {
-  setConnectedUI(false);
-  wsUrlInput.placeholder = "ws://<pc-ip>:3030/ws";
-
-  // If Tauri API isn't available, disable scan gracefully
+  setMode(false);
+  scanStatus.textContent = "";
   if (!tauriCore) {
     scanBtn.disabled = true;
     scanStatus.textContent = "Scan disabled (no Tauri API)";

@@ -1,112 +1,162 @@
-.logo.vanilla:hover {
-  filter: drop-shadow(0 0 2em #ffe21c);
-}
-:root {
-  font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-  font-size: 16px;
-  line-height: 24px;
-  font-weight: 400;
-
-  color: #0f0f0f;
-  background-color: #f6f6f6;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  -webkit-text-size-adjust: 100%;
+body {
+  font-family: system-ui, sans-serif;
+  margin: 0;
+  padding: 0;
+  background: #f7f8fa;
+  color: #222;
 }
 
 .container {
-  margin: 0;
-  padding-top: 10vh;
+  max-width: 600px;
+  margin: 0 auto;
+  padding: 16px;
   display: flex;
   flex-direction: column;
-  justify-content: center;
+  align-items: center;
+}
+
+h1 {
+  margin: 0 0 16px;
+  font-size: 1.8em;
   text-align: center;
 }
 
-.logo {
-  height: 6em;
-  padding: 1.5em;
-  will-change: filter;
-  transition: 0.75s;
+button {
+  padding: 14px;
+  font-size: 1.1em;
+  flex: 1;
+  border-radius: 10px;
+  border: 1px solid #ccc;
+  background: white;
+  cursor: pointer;
+  transition: background 0.2s;
 }
 
-.logo.tauri:hover {
-  filter: drop-shadow(0 0 2em #24c8db);
+button.primary {
+  background: #2f7ef6;
+  color: white;
+  border: none;
+}
+
+button:disabled {
+  opacity: 0.6;
+}
+
+.section {
+  width: 100%;
+  margin: 12px 0;
 }
 
 .row {
   display: flex;
-  justify-content: center;
+  flex-wrap: nowrap;
+  gap: 10px;
+  width: 100%;
 }
 
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
+.hidden {
+  display: none !important;
 }
 
-a:hover {
-  color: #535bf2;
+/* --------- Volume layout --------- */
+.slider-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
 }
 
-h1 {
+.slider-container input[type="range"] {
+  width: 100%;
+  height: 40px;
+  margin: 16px 0;
+}
+
+.control-buttons {
+  display: flex;
+  width: 100%;
+  gap: 10px;
+}
+
+.control-buttons button {
+  flex: 1;
+  height: 60px;
+  font-size: 1.1em;
+}
+
+.mute-status {
+  display: block;
+  text-align: center;
+  margin-top: 8px;
+  font-size: 1.1em;
+  opacity: 0.85;
+}
+
+/* --------- Extra elements --------- */
+.center-text {
+  text-align: center;
+  margin-bottom: 8px;
+}
+
+.status-text {
+  margin-top: 10px;
   text-align: center;
 }
 
-input,
-button {
+.extra-row {
+  margin-top: 12px;
+}
+
+/* --------- Log area --------- */
+#log {
+  width: 100%;
+  height: 120px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 0.9em;
   border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  color: #0f0f0f;
-  background-color: #ffffff;
-  transition: border-color 0.25s;
-  box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
+  border: 1px solid #ccc;
+  padding: 8px;
+  background: #fff;
 }
 
-button {
-  cursor: pointer;
+.log-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
 }
 
-button:hover {
-  border-color: #396cd8;
-}
-button:active {
-  border-color: #396cd8;
-  background-color: #e8e8e8;
+/* --------- Host discovery --------- */
+#hosts {
+  display: grid;
+  gap: 8px;
 }
 
-input,
-button {
-  outline: none;
+.host {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px;
+  border-radius: 10px;
+  background: white;
+  border: 1px solid #ddd;
 }
 
-#greet-input {
-  margin-right: 5px;
+.host .name {
+  font-weight: 600;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    color: #f6f6f6;
-    background-color: #2f2f2f;
+/* --------- Responsive --------- */
+@media (max-width: 480px) {
+  h1 {
+    font-size: 1.5em;
   }
-
-  a:hover {
-    color: #24c8db;
-  }
-
-  input,
   button {
-    color: #ffffff;
-    background-color: #0f0f0f98;
+    font-size: 1em;
+    padding: 12px;
   }
-  button:active {
-    background-color: #0f0f0f69;
+  .control-buttons button {
+    height: 55px;
+    font-size: 1em;
   }
 }
