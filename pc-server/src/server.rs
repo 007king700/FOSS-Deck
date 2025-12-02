@@ -4,12 +4,74 @@ use futures::{SinkExt, StreamExt};
 use log::{error, info};
 use serde::Deserialize;
 use serde_json::json;
+use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio::{select, sync::oneshot};
 use tokio_util::sync::CancellationToken;
 use warp::ws::{Message, WebSocket};
 use warp::{Filter, http::StatusCode};
 
 use crate::audio;
+
+const PAIRING_TTL: Duration = Duration::from_secs(300);
+const PAIRING_IDLE_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone)]
+pub struct PairingState {
+    pub code: String,
+    pub created_at: Instant,
+    pub client: Option<SocketAddr>,
+    pub last_seen: Option<Instant>,
+}
+
+impl PairingState {
+    pub fn new(code: String) -> Self {
+        Self {
+            code,
+            created_at: Instant::now(),
+            client: None,
+            last_seen: None,
+        }
+    }
+
+    pub fn is_expired(&self) -> bool {
+        self.created_at.elapsed() > PAIRING_TTL
+    }
+
+    pub fn mark_seen(&mut self) {
+        self.last_seen = Some(Instant::now());
+    }
+
+    pub fn is_idle_too_long(&self) -> bool {
+        match (self.client, self.last_seen) {
+            (Some(_), Some(last)) => last.elapsed() > PAIRING_IDLE_TIMEOUT,
+            _ => false,
+        }
+    }
+}
+
+pub fn generate_pairing_code() -> String {
+    // Simple 6-digit code using system time as a seed.
+    // Not cryptographically strong but sufficient as a short-lived local pairing code.
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .subsec_nanos();
+    let mut v = nanos as u64 ^ 0xa5a5_5a5a_1234_5678;
+    let mut digits = [0u8; 6];
+    for d in &mut digits {
+        *d = (v % 10) as u8;
+        v /= 10;
+    }
+    digits
+        .into_iter()
+        .rev()
+        .map(|d| char::from(b'0' + d))
+        .collect()
+}
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
@@ -21,14 +83,20 @@ enum WsCommand {
     ToggleMute,
     Mute,
     Unmute,
+    Pair { code: String },
 }
 
-pub async fn run_ws_server(port: u16, shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
+pub async fn run_ws_server(port: u16, shutdown_rx: oneshot::Receiver<()>, pairing_state: Arc<Mutex<PairingState>>) -> Result<()> {
     let cancel = CancellationToken::new();
     let cancel_filter = warp::any().map({
         let cancel = cancel.clone();
         move || cancel.clone()
     });
+
+    let pairing_filter = {
+        let shared = pairing_state.clone();
+        warp::any().map(move || shared.clone())
+    };
 
     // Health endpoint
     let health = warp::path!("health")
@@ -38,10 +106,12 @@ pub async fn run_ws_server(port: u16, shutdown_rx: oneshot::Receiver<()>) -> Res
     // WebSocket endpoint
     let ws_route = warp::path!("ws")
         .and(warp::ws())
+        .and(warp::addr::remote())
         .and(cancel_filter)
-        .map(|ws: warp::ws::Ws, cancel: CancellationToken| {
+        .and(pairing_filter)
+        .map(|ws: warp::ws::Ws, remote: Option<SocketAddr>, cancel: CancellationToken, pairing: Arc<Mutex<PairingState>>| {
             ws.on_upgrade(move |socket| async move {
-                handle_ws(socket, cancel).await;
+                handle_ws(socket, cancel, remote, pairing).await;
             })
         })
         .boxed();
@@ -58,6 +128,26 @@ pub async fn run_ws_server(port: u16, shutdown_rx: oneshot::Receiver<()>) -> Res
 
     let cancel_for_shutdown = cancel.clone();
 
+    // Heartbeat watchdog: every few seconds clear stale pairing info.
+    let pairing_for_watchdog = pairing_state.clone();
+    let cancel_for_watchdog = cancel.clone();
+    tokio::spawn(async move {
+        use tokio::time::{sleep, Duration as TokioDuration};
+        loop {
+            if cancel_for_watchdog.is_cancelled() {
+                break;
+            }
+            {
+                let mut st = pairing_for_watchdog.lock().unwrap();
+                if st.is_idle_too_long() {
+                    st.client = None;
+                    st.last_seen = None;
+                }
+            }
+            sleep(TokioDuration::from_secs(5)).await;
+        }
+    });
+
     warp::serve(routes)
         .bind_with_graceful_shutdown(addr, async move {
             let _ = shutdown_rx.await;
@@ -70,8 +160,13 @@ pub async fn run_ws_server(port: u16, shutdown_rx: oneshot::Receiver<()>) -> Res
     Ok(())
 }
 
-async fn handle_ws(ws: WebSocket, cancel: CancellationToken) {
+async fn handle_ws(ws: WebSocket, cancel: CancellationToken, remote: Option<SocketAddr>, pairing: Arc<Mutex<PairingState>>) {
     let (mut tx, mut rx) = ws.split();
+
+    let is_paired = {
+        let st = pairing.lock().unwrap();
+        st.client.is_some()
+    };
 
     // Send welcome message
     if let Err(e) = tx
@@ -80,7 +175,8 @@ async fn handle_ws(ws: WebSocket, cancel: CancellationToken) {
                 "type": "hello",
                 "server": "foss-deck",
                 "version": "0.1.0",
-                "hint": "send JSON like {\"cmd\":\"get_status\"} / {\"cmd\":\"set_volume\",\"level\":0.5}"
+                "pairing_required": true,
+                "paired": is_paired,
             })
                 .to_string(),
         ))
@@ -89,6 +185,8 @@ async fn handle_ws(ws: WebSocket, cancel: CancellationToken) {
         error!("Failed to send hello: {e}");
         return;
     }
+
+    let mut authenticated = false;
 
     loop {
         select! {
@@ -102,7 +200,38 @@ async fn handle_ws(ws: WebSocket, cancel: CancellationToken) {
                     Some(Ok(msg)) if msg.is_text() => {
                         let text = msg.to_str().unwrap_or_default();
                         let reply = match serde_json::from_str::<WsCommand>(text) {
-                            Ok(cmd) => handle_command(cmd).unwrap_or_else(|e| json!({"type":"error","message":e.to_string()})),
+                            Ok(WsCommand::Pair { code }) => {
+                                let mut st = pairing.lock().unwrap();
+                                if st.is_expired() && st.client.is_none() {
+                                    st.code = generate_pairing_code();
+                                    st.created_at = Instant::now();
+                                }
+
+                                if st.is_expired() {
+                                    json!({"type":"pairing_error","reason":"expired"})
+                                } else if code == st.code {
+                                    if let Some(addr) = remote {
+                                        st.client = Some(addr);
+                                    }
+                                    st.mark_seen();
+                                    authenticated = true;
+                                    json!({"type":"pairing_ok"})
+                                } else {
+                                    json!({"type":"pairing_error","reason":"invalid"})
+                                }
+                            }
+                            Ok(cmd) => {
+                                if !authenticated {
+                                    json!({"type":"error","message":"unauthorized"})
+                                } else {
+                                    // update last_seen on any successful authenticated command
+                                    {
+                                        let mut st = pairing.lock().unwrap();
+                                        st.mark_seen();
+                                    }
+                                    handle_command(cmd).unwrap_or_else(|e| json!({"type":"error","message":e.to_string()}))
+                                }
+                            }
                             Err(e) => json!({"type":"error","message":format!("invalid json: {e}")}),
                         };
 
@@ -116,7 +245,12 @@ async fn handle_ws(ws: WebSocket, cancel: CancellationToken) {
                         error!("WebSocket error: {e}");
                         break;
                     }
-                    None => break, // client disconnected
+                    None => {
+                        // client disconnected; mark as idle so watchdog will clear pairing soon
+                        let mut st = pairing.lock().unwrap();
+                        st.last_seen = Some(Instant::now() - PAIRING_IDLE_TIMEOUT * 2);
+                        break;
+                    }
                 }
             }
         }
@@ -166,6 +300,10 @@ fn handle_command(cmd: WsCommand) -> anyhow::Result<serde_json::Value> {
             audio::set_mute(false)?;
             let (vol, muted) = audio::get_volume_and_mute()?;
             Ok(json!({"type":"ok","action":"unmute","volume":vol,"muted":muted}))
+        }
+        WsCommand::Pair { .. } => {
+            // Pair is handled earlier in handle_ws; reaching here is a logic error.
+            Ok(json!({"type":"error","message":"pair_not_allowed_here"}))
         }
     }
 }

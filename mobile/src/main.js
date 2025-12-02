@@ -26,6 +26,8 @@ const toggleMuteBtn = $("toggleMute");
 const muteStatus = $("muteStatus");
 const getStatusBtn = $("getStatus");
 const disconnectBtn = $("disconnect");
+const pairCodeInput = $("pairCode");
+const pairBtn = $("pairBtn");
 
 // Log
 const logEl = $("log");
@@ -34,6 +36,27 @@ const clearLogBtn = $("clearLog");
 // State
 let ws = null;
 let volumeDebounce = null;
+let isPaired = false;
+
+function disconnect() {
+  if (ws) {
+    try { ws.close(); } catch {}
+    ws = null;
+  }
+  isPaired = false;
+  setMode(false);
+  connStatus.textContent = "Disconnected";
+  // reset pairing UI
+  if (pairCodeInput) pairCodeInput.value = "";
+  if (pairBtn) {
+    pairBtn.disabled = false;
+    pairBtn.classList.remove("hidden");
+    pairCodeInput?.classList.remove("hidden");
+  }
+  log("Disconnected");
+}
+
+disconnectBtn.addEventListener("click", disconnect);
 
 // ---------- Helpers ----------
 function log(line, kind = "info") {
@@ -165,14 +188,17 @@ function connect(url) {
       try { ws.close(); } catch {}
       ws = null;
     }
-    log(`Connecting to ${url} …`);
+    log(`Connecting to ${url} ...`);
     ws = new WebSocket(url);
 
     ws.onopen = () => {
       log("WebSocket open", "ok");
       setMode(true);
-      connStatus.textContent = `Connected to ${url}`;
-      sendCmd({ cmd: "get_status" });
+      isPaired = false;
+      connStatus.textContent = `Connected to ${url} (not paired)`;
+      // ensure pairing UI is visible for a fresh connection
+      if (pairBtn) pairBtn.classList.remove("hidden");
+      if (pairCodeInput) pairCodeInput.classList.remove("hidden");
     };
 
     ws.onmessage = (ev) => {
@@ -180,17 +206,37 @@ function connect(url) {
       try {
         const obj = JSON.parse(data);
         if (obj.type === "hello") {
-          log(`Hello from ${obj.server} v${obj.version}`);
+          log(`Hello from ${obj.server} v${obj.version} (pairing required: ${obj.pairing_required})`);
+        } else if (obj.type === "pairing_ok") {
+          isPaired = true;
+          connStatus.textContent = `Paired with ${url}`;
+          log("Pairing successful", "ok");
+          // hide pairing UI once paired
+          if (pairBtn) pairBtn.classList.add("hidden");
+          if (pairCodeInput) pairCodeInput.classList.add("hidden");
+          sendCmd({ cmd: "get_status" });
+        } else if (obj.type === "pairing_error") {
+          isPaired = false;
+          const reason = obj.reason || "unknown";
+          setStatusError(`Pairing failed: ${reason}`);
+          log(`Pairing failed: ${reason}`, "err");
         } else if (obj.type === "status") {
+          if (!isPaired) {
+            log("Ignoring status because not paired", "err");
+            return;
+          }
           applyStatus(obj);
           log(
               `Status: vol=${Math.round(obj.volume * 100)}% mute=${obj.muted ? "on" : "off"}`
           );
         } else if (obj.type === "ok") {
+          if (!isPaired) {
+            log("Ignoring OK because not paired", "err");
+            return;
+          }
           if (typeof obj.volume === "number") applyStatus(obj);
           log(`OK: ${obj.action ?? ""}`);
         } else if (obj.type === "shutdown") {
-          // Server told us it's going down; close locally.
           log("Server shutdown — disconnecting");
           try { ws.close(); } catch {}
         } else if (obj.type === "error") {
@@ -211,8 +257,7 @@ function connect(url) {
 
     ws.onclose = () => {
       log("WebSocket closed");
-      setMode(false);
-      connStatus.textContent = "Disconnected";
+      disconnect();
     };
   } catch (e) {
     setStatusError("Connect failed");
@@ -220,22 +265,24 @@ function connect(url) {
   }
 }
 
-function disconnect() {
-  if (ws) {
-    try { ws.close(); } catch {}
-    ws = null;
+pairBtn.addEventListener("click", () => {
+  const code = (pairCodeInput.value || "").trim();
+  if (!code) {
+    log("Enter the pairing code from the PC screen", "err");
+    return;
   }
-  setMode(false);
-  connStatus.textContent = "Disconnected";
-  log("Disconnected");
-}
-
-disconnectBtn.addEventListener("click", disconnect);
+  sendCmd({ cmd: "pair", code });
+});
 
 // ---------- Commands ----------
 function sendCmd(obj) {
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     setStatusError("Not connected");
+    return;
+  }
+  if (obj.cmd !== "pair" && !isPaired) {
+    setStatusError("Not paired");
+    log("Command blocked because not paired", "err");
     return;
   }
   try {

@@ -1,12 +1,14 @@
 // src/gui.rs
 #![cfg(windows)]
 
+use std::sync::{Arc, Mutex};
+
 use env_logger;
 use log::info;
 use tokio::{runtime::Runtime, sync::oneshot};
 
 use crate::discovery::run_discovery_server;
-use crate::server::run_ws_server;
+use crate::server::{run_ws_server, PairingState, generate_pairing_code};
 
 const PORT: u16 = 3030; // hardcoded port
 
@@ -35,6 +37,8 @@ struct App {
     discovery_tx: Option<oneshot::Sender<()>>,
 
     last_status: String,
+
+    pairing: Arc<Mutex<PairingState>>,
 }
 
 impl App {
@@ -44,6 +48,9 @@ impl App {
             .build()
             .unwrap();
 
+        let initial_code = generate_pairing_code();
+        let pairing = Arc::new(Mutex::new(PairingState::new(initial_code)));
+
         Self {
             rt,
             server_on: false,
@@ -51,6 +58,7 @@ impl App {
             server_tx: None,
             discovery_tx: None,
             last_status: "Idle".into(),
+            pairing,
         }
     }
 
@@ -62,8 +70,9 @@ impl App {
         let (tx, rx) = oneshot::channel::<()>();
         self.server_tx = Some(tx);
 
+        let pairing = self.pairing.clone();
         self.rt.spawn(async move {
-            let _ = run_ws_server(PORT, rx).await;
+            let _ = run_ws_server(PORT, rx, pairing).await;
         });
 
         self.server_on = true;
@@ -136,6 +145,17 @@ impl eframe::App for App {
 
             ui.separator();
             ui.label(format!("Status: {}", self.last_status));
+
+            // Pairing info
+            let st = self.pairing.lock().unwrap();
+            ui.separator();
+            ui.heading("Pairing");
+            ui.label(format!("Code: {}", st.code));
+            if st.client.is_some() {
+                ui.label("Paired: yes");
+            } else {
+                ui.label("Paired: no (waiting for mobile)");
+            }
         });
     }
 }
