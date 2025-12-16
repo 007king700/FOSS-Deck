@@ -29,7 +29,7 @@ pub async fn run_discovery_server(ws_port: u16, mut shutdown_rx: oneshot::Receiv
                                 "proto": "ws",
                                 "port": ws_port,
                                 "path": "/ws",
-                                "version": "0.1.0"
+                                "version": env!("CARGO_PKG_VERSION")
                             }).to_string();
                             if let Err(e) = sock.send_to(reply.as_bytes(), peer).await {
                                 error!("discovery send_to error: {e}");

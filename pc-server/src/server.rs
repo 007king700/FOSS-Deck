@@ -174,7 +174,7 @@ async fn handle_ws(ws: WebSocket, cancel: CancellationToken, remote: Option<Sock
             json!({
                 "type": "hello",
                 "server": "foss-deck",
-                "version": "0.1.0",
+                "version": env!("CARGO_PKG_VERSION"),
                 "pairing_required": true,
                 "paired": is_paired,
             })

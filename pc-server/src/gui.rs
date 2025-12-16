@@ -13,13 +13,13 @@ use crate::server::{run_ws_server, PairingState, generate_pairing_code};
 const PORT: u16 = 3030; // hardcoded port
 
 pub fn run_gui() {
-    env_logger::init();
+    env_logger::try_init().ok();
     let options = eframe::NativeOptions::default();
 
     if let Err(e) = eframe::run_native(
         "FOSS-Deck PC",
         options,
-        Box::new(|_cc| Box::new(App::new())),
+        Box::new(|_cc| Ok(Box::new(App::new()))),
     ) {
         eprintln!("GUI failed to start: {e}");
     }
@@ -116,13 +116,13 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        egui::TopBottomPanel::top("top").show(ctx, |ui| {
+    fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
+        eframe::egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.heading("FOSS-Deck PC");
             ui.label("Service Control Panel");
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        eframe::egui::CentralPanel::default().show(ctx, |ui| {
             // --- Service toggle ---
             let mut srv = self.server_on;
             if ui.checkbox(&mut srv, "Enable WebSocket Server").changed() {
@@ -135,7 +135,8 @@ impl eframe::App for App {
 
             // --- Discovery toggle (independent from server) ---
             let mut disc = self.discovery_on;
-            if ui.checkbox(&mut disc, "Enable Discoverability").changed() && self.server_on {
+            let resp = ui.add_enabled(self.server_on, eframe::egui::Checkbox::new(&mut disc, "Enable Discoverability")).on_disabled_hover_text("Start the server to change discoverability.");
+            if resp.changed(){
                 if disc {
                     self.start_discovery();
                 } else {
