@@ -15,7 +15,10 @@ env_logger = "0.11"
 eframe = { version = "0.33.3", default-features = true }
 whoami = "1.6.1"
 tokio-util = "0.7.17"
-
+directories-next = "2"
+rand = "0.8"
+sha2 = "0.10"
+hex = "0.4"
 
 # Windows APIs for system volume control (Windows-only)
 [target.'cfg(windows)'.dependencies.windows]

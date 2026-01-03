@@ -8,9 +8,9 @@ use log::info;
 use tokio::{runtime::Runtime, sync::oneshot};
 
 use crate::discovery::run_discovery_server;
-use crate::server::{run_ws_server, PairingState, generate_pairing_code};
+use crate::server::{generate_pairing_code, run_ws_server, PairingState};
 
-const PORT: u16 = 3030; // hardcoded port
+const PORT: u16 = 3030;
 
 pub fn run_gui() {
     env_logger::try_init().ok();
@@ -28,11 +28,9 @@ pub fn run_gui() {
 struct App {
     rt: Runtime,
 
-    // toggles
     server_on: bool,
     discovery_on: bool,
 
-    // channels
     server_tx: Option<oneshot::Sender<()>>,
     discovery_tx: Option<oneshot::Sender<()>>,
 
@@ -133,10 +131,15 @@ impl eframe::App for App {
                 }
             }
 
-            // --- Discovery toggle (independent from server) ---
+            // --- Discovery toggle ---
             let mut disc = self.discovery_on;
-            let resp = ui.add_enabled(self.server_on, eframe::egui::Checkbox::new(&mut disc, "Enable Discoverability")).on_disabled_hover_text("Start the server to change discoverability.");
-            if resp.changed(){
+            let resp = ui
+                .add_enabled(
+                    self.server_on,
+                    eframe::egui::Checkbox::new(&mut disc, "Enable Discoverability"),
+                )
+                .on_disabled_hover_text("Start the server to change discoverability.");
+            if resp.changed() {
                 if disc {
                     self.start_discovery();
                 } else {
@@ -147,16 +150,67 @@ impl eframe::App for App {
             ui.separator();
             ui.label(format!("Status: {}", self.last_status));
 
-            // Pairing info
-            let st = self.pairing.lock().unwrap();
             ui.separator();
-            ui.heading("Pairing");
-            ui.label(format!("Code: {}", st.code));
-            if st.client.is_some() {
-                ui.label("Paired: yes");
+            ui.heading("Pairing / Authorization");
+
+            // Snapshot for display + list
+            let (code, active_id, active_ip, authorized_list_len, authorized_list) = {
+                let st = self.pairing.lock().unwrap();
+                (
+                    st.code.clone(),
+                    st.active_device_id.clone(),
+                    st.active_client_ip.map(|ip| ip.to_string()),
+                    st.authorized_count(),
+                    st.list_authorized(),
+                )
+            };
+
+            ui.label(format!("Pairing code: {}", code));
+            ui.label(format!("Authorized devices stored: {}", authorized_list_len));
+
+            if let Some(id) = &active_id {
+                ui.label(format!("Active paired device: {}", id));
             } else {
-                ui.label("Paired: no (waiting for mobile)");
+                ui.label("Active paired device: (none)");
             }
+            if let Some(ip) = &active_ip {
+                ui.label(format!("Active client IP: {}", ip));
+            }
+
+            ui.separator();
+            ui.heading("Authorized devices");
+
+            if authorized_list.is_empty() {
+                ui.label("(no authorized devices yet)");
+                return;
+            }
+
+            eframe::egui::ScrollArea::vertical()
+                .max_height(260.0)
+                .show(ui, |ui| {
+                    for (device_id, dev) in authorized_list {
+                        ui.group(|ui| {
+                            let name = dev.name.clone().unwrap_or_else(|| "Unnamed device".into());
+                            ui.label(format!("Name: {}", name));
+                            ui.label(format!("Device ID: {}", device_id));
+                            ui.label(format!("Last seen (unix): {}", dev.last_seen));
+
+                            let is_active = active_id.as_deref() == Some(device_id.as_str());
+                            if is_active {
+                                ui.label("Status: ACTIVE");
+                            }
+
+                            ui.horizontal(|ui| {
+                                let revoke = ui.button("Revoke");
+                                if revoke.clicked() {
+                                    let mut st = self.pairing.lock().unwrap();
+                                    st.revoke_device(&device_id);
+                                }
+                            });
+                        });
+                        ui.add_space(6.0);
+                    }
+                });
         });
     }
 }

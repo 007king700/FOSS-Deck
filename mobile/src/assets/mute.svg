@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="40.491455mm"
+   height="34.737995mm"
+   viewBox="0 0 40.491455 34.737995"
+   version="1.1"
+   id="svg1"
+   inkscape:export-filename="mute.svg"
+   inkscape:export-xdpi="96"
+   inkscape:export-ydpi="96"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#505050"
+     bordercolor="#ffffff"
+     borderopacity="1"
+     inkscape:showpageshadow="0"
+     inkscape:pageopacity="0"
+     inkscape:pagecheckerboard="1"
+     inkscape:deskcolor="#505050"
+     inkscape:document-units="mm">
+    <inkscape:page
+       x="0"
+       y="0"
+       width="40.491455"
+       height="34.737995"
+       id="page2"
+       margin="0"
+       bleed="0" />
+  </sodipodi:namedview>
+  <defs
+     id="defs1" />
+  <g
+     inkscape:label="Vrstva 1"
+     inkscape:groupmode="layer"
+     id="layer1"
+     transform="translate(-1.7414323,-1.6810979)">
+    <g
+       id="g187"
+       style="display:inline;stroke:#ea2a2a;stroke-opacity:1"
+       transform="matrix(0.26458333,0,0,0.26458333,-94.785281,-228.08)">
+		<g
+   id="g185"
+   style="fill:#2e3144;fill-opacity:1;stroke:#ea2a2a;stroke-width:3.64724;stroke-dasharray:none;stroke-opacity:1">
+			<path
+   fill="#2b2d2d"
+   d="m 459.749,870.5 c -0.712,-0.4 -1.586,-0.383 -2.282,0.043 l -50.587,30.973 h -37.974 c -1.246,0 -2.257,1.012 -2.257,2.258 v 60.521 c 0,1.246 1.011,2.258 2.257,2.258 h 37.974 l 50.587,30.973 c 0.361,0.221 0.771,0.332 1.179,0.332 0.381,0 0.761,-0.096 1.104,-0.289 0.713,-0.398 1.154,-1.152 1.154,-1.969 V 872.469 c -10e-4,-0.817 -0.442,-1.571 -1.155,-1.969 z"
+   id="path185"
+   style="fill:#2e3144;fill-opacity:1;stroke:#cd2424;stroke-width:3.64724;stroke-dasharray:none;stroke-opacity:1" />
+
+		</g>
+
+		<g
+   id="g186"
+   style="stroke:#ea2a2a;stroke-opacity:1">
+			
+				<line
+   fill="none"
+   stroke="#2b2d2d"
+   stroke-width="5.5979"
+   stroke-linecap="round"
+   stroke-linejoin="round"
+   stroke-miterlimit="10"
+   x1="482.32599"
+   y1="917.664"
+   x2="515.065"
+   y2="950.40399"
+   id="line185"
+   style="stroke:#ea2a2a;stroke-opacity:1" />
+
+			
+				<line
+   fill="none"
+   stroke="#2b2d2d"
+   stroke-width="5.5979"
+   stroke-linecap="round"
+   stroke-linejoin="round"
+   stroke-miterlimit="10"
+   x1="515.065"
+   y1="917.664"
+   x2="482.32599"
+   y2="950.40399"
+   id="line186"
+   style="stroke:#ea2a2a;stroke-opacity:1" />
+
+		</g>
+
+	</g>
+  </g>
+</svg>

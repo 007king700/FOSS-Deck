@@ -1,4 +1,4 @@
-// Use Tauri API if available (Android injects __TAURI__)
+// --- Optional Tauri discovery ---
 const tauriCore = (globalThis.__TAURI__ && globalThis.__TAURI__.core) || null;
 const invoke = tauriCore
     ? tauriCore.invoke
@@ -6,93 +6,269 @@ const invoke = tauriCore
 
 const $ = (id) => document.getElementById(id);
 
-// Sections
-const connectSection = $("connectSection");
-const controlsSection = $("controlsSection");
+// Screens
+const homeScreen = $("homeScreen");
+const connectedScreen = $("connectedScreen");
 
-// Connect UI
-const scanBtn = $("scan");
-const directBtn = $("direct");
+// Home UI
+const scanBtn = $("scanBtn");
+const homeSettingsBtn = $("homeSettingsBtn"); // currently unused
+const directBtn = $("directBtn");
 const scanStatus = $("scanStatus");
-const hostsEl = $("hosts");
+const recentList = $("recentList");
+const availableList = $("availableList");
+const recentSub = $("recentSub");
 
-// Controls UI
-const connStatus = $("connStatus");
-const volSlider = $("vol");
-const volVal = $("volVal");
-const volUpBtn = $("volUp");
-const volDownBtn = $("volDown");
-const toggleMuteBtn = $("toggleMute");
-const muteStatus = $("muteStatus");
-const getStatusBtn = $("getStatus");
-const disconnectBtn = $("disconnect");
-const pairCodeInput = $("pairCode");
-const pairBtn = $("pairBtn");
+// Connected UI
+const backBtn = $("backBtn");
+const editBtn = $("editBtn");
+const tileGrid = $("tileGrid");
+const connTitle = $("connTitle");
+const connSub = $("connSub");
+const pairHint = $("pairHint");
+const editHint = $("editHint");
+const pagePrev = $("pagePrev");
+const pageNext = $("pageNext");
+const pageNum = $("pageNum");
 
-// Log
+// Pair modal
+const pairModal = $("pairModal");
+const pairCodeInput = $("pairCodeInput");
+const pairCancel = $("pairCancel");
+const pairConfirm = $("pairConfirm");
+const pairError = $("pairError");
+
+// --- Audio state from PC ---
+const audioState = {
+  muted: false,
+  volume: 1.0,
+};
+
+// Debug log
 const logEl = $("log");
-const clearLogBtn = $("clearLog");
+function log(msg) {
+  // logEl.classList.remove("hidden");
+  // logEl.textContent += msg + "\n";
+}
 
-// State
+// --- Persistent identity ---
+let deviceId = localStorage.getItem("fossdeck_device_id");
+if (!deviceId) {
+  deviceId = crypto.randomUUID();
+  localStorage.setItem("fossdeck_device_id", deviceId);
+}
+
+// token is global (server issues token on pairing_ok)
+let authToken = localStorage.getItem("fossdeck_token");
+
+// --- Connection state ---
 let ws = null;
-let volumeDebounce = null;
+let currentUrl = "";
+let currentPcName = "";
 let isPaired = false;
+let heartbeatTimer = null;
 
-function disconnect() {
-  if (ws) {
-    try { ws.close(); } catch {}
-    ws = null;
-  }
-  isPaired = false;
-  setMode(false);
-  connStatus.textContent = "Disconnected";
-  // reset pairing UI
-  if (pairCodeInput) pairCodeInput.value = "";
-  if (pairBtn) {
-    pairBtn.disabled = false;
-    pairBtn.classList.remove("hidden");
-    pairCodeInput?.classList.remove("hidden");
-  }
-  log("Disconnected");
-}
+// --- Recent PCs store ---
+const RECENTS_KEY = "fossdeck_recents_v1";
 
-disconnectBtn.addEventListener("click", disconnect);
-
-// ---------- Helpers ----------
-function log(line, kind = "info") {
-  const ts = new Date().toLocaleTimeString();
-  const prefix = kind === "err" ? "❌" : kind === "ok" ? "✅" : "•";
-  logEl.textContent += `[${ts}] ${prefix} ${line}\n`;
-  logEl.scrollTop = logEl.scrollHeight;
-}
-
-function setMode(connected) {
-  // swap sections
-  connectSection.classList.toggle("hidden", connected);
-  controlsSection.classList.toggle("hidden", !connected);
-
-  if (connected) {
-    connStatus.classList.add("ok");
-    connStatus.classList.remove("err");
-  } else {
-    connStatus.classList.remove("ok");
-    connStatus.classList.remove("err");
+function loadRecents() {
+  try {
+    const s = localStorage.getItem(RECENTS_KEY);
+    const arr = s ? JSON.parse(s) : [];
+    if (!Array.isArray(arr)) return [];
+    return arr;
+  } catch {
+    return [];
   }
 }
 
-function setStatusError(msg) {
-  connStatus.textContent = msg;
-  connStatus.classList.remove("ok");
-  connStatus.classList.add("err");
+function saveRecents(arr) {
+  localStorage.setItem(RECENTS_KEY, JSON.stringify(arr));
 }
 
-function applyStatus({ volume, muted }) {
-  if (typeof volume === "number") {
-    volSlider.value = String(volume);
-    volVal.textContent = `${Math.round(volume * 100)}%`;
+function upsertRecent({ name, url }) {
+  const arr = loadRecents();
+  const now = Date.now();
+  const idx = arr.findIndex(x => x.url === url);
+  const entry = { name: name || url, url, lastConnected: now };
+  if (idx >= 0) arr[idx] = { ...arr[idx], ...entry };
+  else arr.unshift(entry);
+  // keep max 10
+  const out = arr
+      .sort((a,b) => (b.lastConnected || 0) - (a.lastConnected || 0))
+      .slice(0, 10);
+  saveRecents(out);
+}
+
+function forgetRecent(url) {
+  const arr = loadRecents().filter(x => x.url !== url);
+  saveRecents(arr);
+}
+
+// --- Layout store (modular grid) ---
+const LAYOUT_KEY = "fossdeck_layout_v1";
+const DEFAULT_LAYOUT = [
+  "toggle_mute",
+  "volume_down",
+  "volume_up",
+];
+
+function loadLayout() {
+  try {
+    const s = localStorage.getItem(LAYOUT_KEY);
+    const arr = s ? JSON.parse(s) : null;
+    if (Array.isArray(arr) && arr.length) return arr;
+  } catch {}
+  return [...DEFAULT_LAYOUT];
+}
+
+function saveLayout(arr) {
+  localStorage.setItem(LAYOUT_KEY, JSON.stringify(arr));
+}
+
+// --- Actions registry (add more later without changing layout system) ---
+const ACTIONS = {
+  toggle_mute: {
+    id: "toggle_mute",
+    title: "Mute",
+    icon: () =>
+        audioState.muted
+            ? "assets/mute.svg"
+            : "assets/unmute.svg",
+    enabled: () => isPaired,
+    run: () => {
+      // optimistic UI update
+      audioState.muted = !audioState.muted;
+      renderTiles();
+
+      sendCmd({ cmd: "toggle_mute" });
+    },
+  },
+  volume_up: {
+    id: "volume_up",
+    title: "Volume +",
+    icon: "assets/volume_up.svg",
+    enabled: () => isPaired,
+    run: () => sendCmd({ cmd: "volume_up", delta: 0.05 }),
+  },
+  volume_down: {
+    id: "volume_down",
+    title: "Volume −",
+    icon: "assets/volume_down.svg",
+    enabled: () => isPaired,
+    run: () => sendCmd({ cmd: "volume_down", delta: 0.05 }),
+  },
+};
+
+// --- UI helpers ---
+function showHome() {
+  homeScreen.classList.remove("hidden");
+  connectedScreen.classList.add("hidden");
+}
+
+function showConnected() {
+  homeScreen.classList.add("hidden");
+  connectedScreen.classList.remove("hidden");
+}
+
+function setConnectedMeta(title, sub) {
+  connTitle.textContent = title || "Connected";
+  connSub.textContent = sub || "—";
+}
+
+function openPairModal() {
+  pairError.textContent = "";
+  pairCodeInput.value = "";
+  pairModal.classList.remove("hidden");
+  setTimeout(() => pairCodeInput.focus(), 50);
+}
+
+function closePairModal() {
+  pairModal.classList.add("hidden");
+}
+
+pairCancel.addEventListener("click", closePairModal);
+
+// --- Heartbeat ---
+function stopHeartbeat() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
   }
-  if (typeof muted === "boolean") {
-    muteStatus.textContent = muted ? "Muted" : "Not muted";
+}
+
+function startHeartbeat() {
+  stopHeartbeat();
+  sendCmd({ cmd: "get_status" });
+  heartbeatTimer = setInterval(() => {
+    if (ws && ws.readyState === WebSocket.OPEN && isPaired) {
+      sendCmd({ cmd: "get_status" });
+    }
+  }, 5000);
+}
+
+// --- Render recents + available lists ---
+function renderRecents() {
+  const recents = loadRecents();
+  recentList.innerHTML = "";
+
+  if (!recents.length) {
+    recentSub.textContent = "No saved PCs yet";
+    return;
+  }
+
+  recentSub.textContent = `${recents.length} saved`;
+
+  for (const pc of recents) {
+    const row = document.createElement("div");
+    row.className = "list-item";
+    row.innerHTML = `
+      <div class="left">
+        <div class="name">${escapeHtml(pc.name || "PC")}</div>
+        <div class="sub">${escapeHtml(pc.url)}</div>
+      </div>
+      <div class="row-actions">
+        <button class="btn small primary" data-act="connect">Connect</button>
+        <button class="btn small secondary" data-act="forget">Forget</button>
+      </div>
+    `;
+    row.querySelector('[data-act="connect"]').addEventListener("click", () => {
+      connect(pc.url, pc.name || "");
+    });
+    row.querySelector('[data-act="forget"]').addEventListener("click", () => {
+      forgetRecent(pc.url);
+      renderRecents();
+    });
+    recentList.appendChild(row);
+  }
+}
+
+function renderAvailable(hosts) {
+  availableList.innerHTML = "";
+
+  if (!hosts || !hosts.length) {
+    scanStatus.textContent = "No PCs found.";
+    return;
+  }
+
+  scanStatus.textContent = `Found ${hosts.length} host(s)`;
+
+  for (const h of hosts) {
+    const url = buildWsUrlFromHost(h);
+    const name = h.name || "PC";
+    const row = document.createElement("div");
+    row.className = "list-item";
+    row.innerHTML = `
+      <div class="left">
+        <div class="name">${escapeHtml(name)}</div>
+        <div class="sub">${escapeHtml(url)}</div>
+      </div>
+      <div class="row-actions">
+        <button class="btn small primary">Connect</button>
+      </div>
+    `;
+    row.querySelector("button").addEventListener("click", () => connect(url, name));
+    availableList.appendChild(row);
   }
 }
 
@@ -102,220 +278,352 @@ function buildWsUrlFromHost(h) {
 }
 
 function normalizeDirectInputToWs(input) {
-  // Accept:
-  // - ws://host[:port]/ws
-  // - wss://host...
-  // - 192.168.1.42            -> ws://192.168.1.42:3030/ws
-  // - 192.168.1.42:3031       -> ws://192.168.1.42:3031/ws
   const raw = input.trim();
   if (raw.startsWith("ws://") || raw.startsWith("wss://")) return raw;
 
-  // naive IP[:port]
   const m = raw.match(/^(\d{1,3}(?:\.\d{1,3}){3})(?::(\d{1,5}))?$/);
   if (m) {
     const ip = m[1];
     const port = m[2] ? Number(m[2]) : 3030;
     return `ws://${ip}:${port}/ws`;
   }
-  return ""; // invalid
+  return "";
 }
 
-// ---------- Discovery ----------
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+// --- Scan / Direct connect ---
 scanBtn.addEventListener("click", async () => {
+  availableList.innerHTML = "";
+  scanStatus.textContent = "Scanning…";
+
   if (!tauriCore) {
     scanStatus.textContent = "Scan disabled (no Tauri API)";
-    log("Tauri API not available for discovery", "err");
     return;
   }
 
-  hostsEl.innerHTML = "";
-  scanBtn.disabled = true;
-  scanStatus.textContent = "Scanning…";
-
   try {
-    // lib.rs command: discover_hosts(timeout_ms?: u64)
     const hosts = await invoke("discover_hosts", { timeoutMs: 1200 });
-    if (!hosts || hosts.length === 0) {
-      scanStatus.textContent = "No PCs found.";
+    renderAvailable(hosts);
+  } catch (e) {
+    scanStatus.textContent = "Scan failed";
+    log(`Scan error: ${e}`);
+  }
+});
+
+directBtn.addEventListener("click", () => {
+  const v = prompt("Enter PC IP (or IP:port) or full ws:// URL:", "");
+  if (v === null) return;
+  const url = normalizeDirectInputToWs(v);
+  if (!url) return;
+  connect(url, url);
+});
+
+// --- Connected page "pages" (simple placeholder; can expand later) ---
+let currentPage = 1;
+pagePrev.addEventListener("click", () => {
+  if (currentPage > 1) currentPage--;
+  pageNum.textContent = String(currentPage);
+});
+pageNext.addEventListener("click", () => {
+  currentPage++;
+  pageNum.textContent = String(currentPage);
+});
+
+// --- Edit mode for modular tiles ---
+let editMode = false;
+editBtn.addEventListener("click", () => {
+  editMode = !editMode;
+  editHint.classList.toggle("hidden", !editMode);
+  renderTiles();
+});
+
+// Back button
+backBtn.addEventListener("click", () => {
+  disconnect();
+});
+
+// --- Pair modal confirm ---
+pairConfirm.addEventListener("click", () => {
+  const code = (pairCodeInput.value || "").trim();
+  if (!code) {
+    pairError.textContent = "Please enter the code.";
+    return;
+  }
+  sendCmd({
+    cmd: "pair",
+    code,
+    device_id: deviceId,
+    device_name: "Mobile",
+  });
+});
+
+// --- WebSocket connect / disconnect ---
+function connect(url, name) {
+  stopHeartbeat();
+
+  if (ws) {
+    try { ws.close(); } catch {}
+    ws = null;
+  }
+
+  currentUrl = url;
+  currentPcName = name || url;
+  isPaired = false;
+  pairHint.classList.add("hidden");
+
+  setConnectedMeta(currentPcName, url);
+  showConnected();
+  renderTiles();
+
+  ws = new WebSocket(url);
+
+  ws.onopen = () => {
+    log("ws open");
+
+    authToken = localStorage.getItem("fossdeck_token");
+
+    if (authToken) {
+      sendCmd({ cmd: "auth", device_id: deviceId, token: authToken });
+
+      // If auth doesn't succeed quickly, show modal (covers cases where server is slow)
+      setTimeout(() => {
+        if (!isPaired && ws && ws.readyState === WebSocket.OPEN) {
+          pairHint.classList.remove("hidden");
+          openPairModal();
+        }
+      }, 600);
+    } else {
+      // No token => immediately prompt for pairing
+      pairHint.classList.remove("hidden");
+      openPairModal();
+    }
+  };
+
+  ws.onmessage = (ev) => {
+    let obj;
+    try { obj = JSON.parse(ev.data); } catch { return; }
+
+    if (obj.type === "hello") {
+      // ok
       return;
     }
 
-    scanStatus.textContent = `Found ${hosts.length} host(s)`;
-    hostsEl.innerHTML = hosts.map(h => {
-      const url = buildWsUrlFromHost(h);
-      const name = h.name ? `${h.name}` : "PC";
-      const version = h.version ? ` • v${h.version}` : "";
-      return `
-        <div class="host">
-          <div>
-            <div class="name">${name}${version}</div>
-            <div class="url">${url}</div>
-          </div>
-          <button data-url="${url}" class="primary">Connect</button>
-        </div>
-      `;
-    }).join("");
-
-    for (const btn of hostsEl.querySelectorAll("button[data-url]")) {
-      btn.addEventListener("click", () => {
-        connect(btn.dataset.url);
-      });
-    }
-  } catch (e) {
-    scanStatus.textContent = "Scan failed";
-    log(`Scan error: ${e}`, "err");
-  } finally {
-    scanBtn.disabled = false;
-  }
-});
-
-// ---------- Direct connect prompt ----------
-directBtn.addEventListener("click", () => {
-  const v = prompt("Enter PC IP (or IP:port) or full ws:// URL:", "");
-  if (v === null) return; // canceled
-  const url = normalizeDirectInputToWs(v);
-  if (!url) {
-    log("Invalid address. Use IP (e.g. 192.168.0.10) or ws:// URL.", "err");
-    return;
-  }
-  connect(url);
-});
-
-// ---------- WebSocket ----------
-function connect(url) {
-  try {
-    if (ws) {
-      try { ws.close(); } catch {}
-      ws = null;
-    }
-    log(`Connecting to ${url} ...`);
-    ws = new WebSocket(url);
-
-    ws.onopen = () => {
-      log("WebSocket open", "ok");
-      setMode(true);
-      isPaired = false;
-      connStatus.textContent = `Connected to ${url} (not paired)`;
-      // ensure pairing UI is visible for a fresh connection
-      if (pairBtn) pairBtn.classList.remove("hidden");
-      if (pairCodeInput) pairCodeInput.classList.remove("hidden");
-    };
-
-    ws.onmessage = (ev) => {
-      const data = ev.data;
-      try {
-        const obj = JSON.parse(data);
-        if (obj.type === "hello") {
-          log(`Hello from ${obj.server} v${obj.version} (pairing required: ${obj.pairing_required})`);
-        } else if (obj.type === "pairing_ok") {
-          isPaired = true;
-          connStatus.textContent = `Paired with ${url}`;
-          log("Pairing successful", "ok");
-          // hide pairing UI once paired
-          if (pairBtn) pairBtn.classList.add("hidden");
-          if (pairCodeInput) pairCodeInput.classList.add("hidden");
-          sendCmd({ cmd: "get_status" });
-        } else if (obj.type === "pairing_error") {
-          isPaired = false;
-          const reason = obj.reason || "unknown";
-          setStatusError(`Pairing failed: ${reason}`);
-          log(`Pairing failed: ${reason}`, "err");
-        } else if (obj.type === "status") {
-          if (!isPaired) {
-            log("Ignoring status because not paired", "err");
-            return;
-          }
-          applyStatus(obj);
-          log(
-              `Status: vol=${Math.round(obj.volume * 100)}% mute=${obj.muted ? "on" : "off"}`
-          );
-        } else if (obj.type === "ok") {
-          if (!isPaired) {
-            log("Ignoring OK because not paired", "err");
-            return;
-          }
-          if (typeof obj.volume === "number") applyStatus(obj);
-          log(`OK: ${obj.action ?? ""}`);
-        } else if (obj.type === "shutdown") {
-          log("Server shutdown — disconnecting");
-          try { ws.close(); } catch {}
-        } else if (obj.type === "error") {
-          setStatusError(`Server error: ${obj.message}`);
-          log(`Server error: ${obj.message}`, "err");
-        } else {
-          log(`Message: ${String(data).slice(0, 200)}`);
-        }
-      } catch {
-        log(`Non-JSON message: ${String(data).slice(0, 200)}`, "err");
+    if (obj.type === "status") {
+      if (typeof obj.muted === "boolean") {
+        audioState.muted = obj.muted;
       }
-    };
+      if (typeof obj.volume === "number") {
+        audioState.volume = obj.volume;
+      }
 
-    ws.onerror = () => {
-      setStatusError("WebSocket error");
-      log("WebSocket error", "err");
-    };
+      // Re-render tiles so mute icon updates
+      renderTiles();
+      return;
+    }
 
-    ws.onclose = () => {
-      log("WebSocket closed");
+    if (obj.type === "auth_ok") {
+      isPaired = true;
+      pairHint.classList.add("hidden");
+      upsertRecent({ name: currentPcName, url: currentUrl });
+      renderRecents();
+      renderTiles();
+      startHeartbeat();
+      return;
+    }
+
+    if (obj.type === "auth_error") {
+      // token invalid -> clear and require pairing again
+      localStorage.removeItem("fossdeck_token");
+      authToken = null;
+      isPaired = false;
+      pairHint.classList.remove("hidden");
+      renderTiles();
+      return;
+      openPairModal();
+      return;
+    }
+
+    if (obj.type === "pairing_ok") {
+      if (obj.token) {
+        localStorage.setItem("fossdeck_token", obj.token);
+        authToken = obj.token;
+      }
+      isPaired = true;
+      pairHint.classList.add("hidden");
+      closePairModal();
+      upsertRecent({ name: currentPcName, url: currentUrl });
+      renderRecents();
+      renderTiles();
+      startHeartbeat();
+      return;
+    }
+
+    if (obj.type === "pairing_error") {
+      pairError.textContent = `Pairing error: ${obj.reason || "unknown"}`;
+      return;
+    }
+
+    if (obj.type === "rate_limited") {
+      // nice UX for your new server feature
+      const sec = obj.retry_after_secs ?? 0;
+      pairError.textContent = `Rate limited (${obj.reason}). Try again in ${sec}s.`;
+      return;
+    }
+
+    if (obj.type === "error" && obj.message === "unauthorized") {
+      isPaired = false;
+      pairHint.classList.remove("hidden");
+      renderTiles();
+      openPairModal();
+      return;
+    }
+
+    if (obj.type === "shutdown") {
       disconnect();
-    };
-  } catch (e) {
-    setStatusError("Connect failed");
-    log(`Connect exception: ${e}`, "err");
+      return;
+    }
+  };
+
+  ws.onclose = () => {
+    disconnect(true);
+  };
+
+  ws.onerror = () => {
+    // keep screen but show not connected
+    disconnect(true);
+  };
+}
+
+function disconnect(stayHome = false) {
+  stopHeartbeat();
+
+  if (ws) {
+    try { ws.close(); } catch {}
+    ws = null;
+  }
+
+  isPaired = false;
+  currentUrl = "";
+  currentPcName = "";
+
+  closePairModal();
+
+  if (!stayHome) {
+    showHome();
+  } else {
+    // If it errored while connected, go back home
+    showHome();
   }
 }
 
-pairBtn.addEventListener("click", () => {
-  const code = (pairCodeInput.value || "").trim();
-  if (!code) {
-    log("Enter the pairing code from the PC screen", "err");
-    return;
-  }
-  sendCmd({ cmd: "pair", code });
-});
-
-// ---------- Commands ----------
+// --- Send command ---
 function sendCmd(obj) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) {
-    setStatusError("Not connected");
-    return;
-  }
-  if (obj.cmd !== "pair" && !isPaired) {
-    setStatusError("Not paired");
-    log("Command blocked because not paired", "err");
-    return;
-  }
-  try {
-    ws.send(JSON.stringify(obj));
-  } catch (e) {
-    log(`Send failed: ${e}`, "err");
-  }
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify(obj));
 }
 
-volUpBtn.addEventListener("click", () => sendCmd({ cmd: "volume_up", delta: 0.05 }));
-volDownBtn.addEventListener("click", () => sendCmd({ cmd: "volume_down", delta: 0.05 }));
-toggleMuteBtn.addEventListener("click", () => sendCmd({ cmd: "toggle_mute" }));
-getStatusBtn.addEventListener("click", () => sendCmd({ cmd: "get_status" }));
+// --- Render modular tiles ---
+function renderTiles() {
+  tileGrid.innerHTML = "";
 
-// Debounce set_volume while dragging
-volSlider.addEventListener("input", () => {
-  const level = parseFloat(volSlider.value);
-  volVal.textContent = `${Math.round(level * 100)}%`;
-  if (volumeDebounce) clearTimeout(volumeDebounce);
-  volumeDebounce = setTimeout(() => {
-    sendCmd({ cmd: "set_volume", level });
-  }, 120);
-});
+  const layout = loadLayout();
+  const used = new Set();
 
-// ---------- Log ----------
-clearLogBtn.addEventListener("click", () => (logEl.textContent = ""));
+  // Build tiles in stored order
+  for (const actionId of layout) {
+    if (used.has(actionId)) continue;
+    used.add(actionId);
 
-// ---------- Init ----------
-(function init() {
-  setMode(false);
-  scanStatus.textContent = "";
-  if (!tauriCore) {
-    scanBtn.disabled = true;
-    scanStatus.textContent = "Scan disabled (no Tauri API)";
+    const action = ACTIONS[actionId];
+    if (!action) continue;
+
+    tileGrid.appendChild(makeTile(action));
   }
-})();
+
+  // If layout references missing actions or you add new actions later,
+  // you could optionally append those here.
+}
+
+function makeTile(action) {
+  const el = document.createElement("div");
+  el.className = "tile";
+  el.dataset.actionId = action.id;
+
+  const enabled = action.enabled();
+  if (!enabled) el.classList.add("disabled");
+
+  const iconSrc =
+      typeof action.icon === "function"
+          ? action.icon()
+          : action.icon;
+
+  el.innerHTML = `
+    ${editMode ? `<div class="badge">drag</div>` : ``}
+    <img class="tile-icon"
+         src="${iconSrc}"
+         alt="${escapeHtml(action.title)}"
+         draggable="false" />
+    <div class="tile-title">${escapeHtml(action.title)}</div>
+  `;
+
+  // tap behavior
+  el.addEventListener("click", () => {
+    if (editMode) return;
+    if (!action.enabled()) {
+      if (!isPaired) openPairModal();
+      return;
+    }
+    action.run();
+  });
+
+  // drag & drop (only in edit mode)
+  el.draggable = editMode;
+
+  el.addEventListener("dragstart", (e) => {
+    if (!editMode) return;
+    el.classList.add("dragging");
+    e.dataTransfer.setData("text/plain", action.id);
+    e.dataTransfer.effectAllowed = "move";
+  });
+
+  el.addEventListener("dragend", () => {
+    el.classList.remove("dragging");
+  });
+
+  el.addEventListener("dragover", (e) => {
+    if (!editMode) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+  });
+
+  el.addEventListener("drop", (e) => {
+    if (!editMode) return;
+    e.preventDefault();
+
+    const draggedId = e.dataTransfer.getData("text/plain");
+    const targetId = el.dataset.actionId;
+    if (!draggedId || !targetId || draggedId === targetId) return;
+
+    const layout = loadLayout();
+    const from = layout.indexOf(draggedId);
+    const to = layout.indexOf(targetId);
+    if (from < 0 || to < 0) return;
+
+    layout.splice(from, 1);
+    layout.splice(to, 0, draggedId);
+
+    saveLayout(layout);
+    renderTiles();
+  });
+
+  return el;
+}
+
+// --- Init ---
+renderRecents();
+scanStatus.textContent = "Tap ⟳ to scan.";

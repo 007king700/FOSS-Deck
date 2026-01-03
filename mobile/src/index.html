@@ -2,64 +2,100 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta
-          name="viewport"
-          content="width=device-width, initial-scale=1.0, maximum-scale=1.0"
-  />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0"/>
   <title>FOSS-Deck Mobile</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 
 <body>
-<div class="container">
-  <h1>FOSS-Deck</h1>
-
-  <!-- Connect Section -->
-  <section id="connectSection" class="section">
-    <div class="row">
-      <button id="scan" class="primary">Scan</button>
-      <button id="direct">Connect directly</button>
-    </div>
-    <div id="scanStatus" class="status-text"></div>
-    <div id="hosts"></div>
-  </section>
-
-  <!-- Controls Section -->
-  <section id="controlsSection" class="section hidden">
-    <div id="connStatus" class="center-text">Disconnected</div>
-
-    <div class="slider-container">
-      <input id="vol" type="range" min="0" max="1" step="0.01" value="0.50" />
-      <span id="volVal">50%</span>
+<div class="app">
+  <!-- HOME / CONNECT SCREEN -->
+  <section id="homeScreen" class="screen">
+    <div class="topbar">
+      <div class="title">Get Connected</div>
+      <div class="topbar-actions">
+        <button id="scanBtn" class="icon-btn" title="Scan">
+          <span class="icon">⟳</span>
+        </button>
+        <button id="homeSettingsBtn" class="icon-btn" title="Settings">
+          <span class="icon">⚙</span>
+        </button>
+      </div>
     </div>
 
-    <div class="control-buttons">
-      <button id="volUp">+</button>
-      <button id="toggleMute" class="primary">Toggle Mute</button>
-      <button id="volDown">−</button>
-    </div>
+    <div class="content">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-title">Previously connected</div>
+          <div class="card-sub" id="recentSub">No saved PCs yet</div>
+        </div>
+        <div id="recentList" class="list"></div>
+      </div>
 
-    <span id="muteStatus" class="mute-status">(unknown)</span>
+      <div class="section-title">Available computers</div>
+      <div id="scanStatus" class="muted"></div>
+      <div id="availableList" class="list"></div>
 
-    <div class="row extra-row">
-      <button id="getStatus">Refresh</button>
-      <button id="disconnect">Disconnect</button>
-    </div>
-
-    <div class="row extra-row">
-      <input id="pairCode" type="text" placeholder="Pairing code from PC" />
-      <button id="pairBtn" class="primary">Pair</button>
+      <div class="footer-actions">
+        <button id="directBtn" class="btn secondary">Connect directly</button>
+      </div>
     </div>
   </section>
 
-  <!-- Log -->
-  <section class="section">
-    <div class="log-header">
-      <strong>Log</strong>
-      <button id="clearLog">Clear</button>
+  <!-- CONNECTED SCREEN -->
+  <section id="connectedScreen" class="screen hidden">
+    <div class="topbar">
+      <div class="topbar-left">
+        <button id="backBtn" class="icon-btn" title="Back">
+          <span class="icon">‹</span>
+        </button>
+        <div class="page-indicator">
+          <button id="pagePrev" class="icon-btn small" title="Prev page"><span class="icon">‹</span></button>
+          <div id="pageNum" class="page-num">1</div>
+          <button id="pageNext" class="icon-btn small" title="Next page"><span class="icon">›</span></button>
+        </div>
+      </div>
+
+      <div class="topbar-actions">
+        <button id="editBtn" class="icon-btn" title="Edit layout">
+          <span class="icon">⚙</span>
+        </button>
+      </div>
     </div>
-    <div id="log"></div>
+
+    <div class="connected-meta">
+      <div id="connTitle" class="conn-title">Connected</div>
+      <div id="connSub" class="muted">—</div>
+      <div id="pairHint" class="pair-hint hidden">
+        Not paired — enter code on Home screen to pair.
+      </div>
+    </div>
+
+    <div class="grid-wrap">
+      <div id="tileGrid" class="tile-grid"></div>
+    </div>
+
+    <div id="editHint" class="edit-hint hidden">
+      Edit mode: drag tiles to rearrange. Tap ⚙ again to save.
+    </div>
   </section>
+
+  <!-- Simple modal for pairing code if needed -->
+  <div id="pairModal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-title">Pair with PC</div>
+      <div class="modal-sub muted">Enter the 6-digit code shown on the PC</div>
+      <input id="pairCodeInput" class="modal-input" type="text" inputmode="numeric" placeholder="123456" maxlength="6"/>
+      <div class="modal-actions">
+        <button id="pairCancel" class="btn secondary">Cancel</button>
+        <button id="pairConfirm" class="btn primary">Pair</button>
+      </div>
+      <div id="pairError" class="muted" style="margin-top:10px;"></div>
+    </div>
+  </div>
+
+  <!-- Log (optional; keep for debugging) -->
+  <pre id="log" class="log hidden"></pre>
 </div>
 
 <script src="./main.js"></script>
