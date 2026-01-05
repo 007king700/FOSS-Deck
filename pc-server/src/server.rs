@@ -19,6 +19,8 @@ use warp::ws::{Message, WebSocket};
 use warp::Filter;
 
 use crate::audio;
+use crate::media;
+use crate::system;
 
 const PAIRING_TTL: Duration = Duration::from_secs(300);
 const PAIRING_IDLE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -327,6 +329,12 @@ enum WsCommand {
     VolumeUp { delta: Option<f32> },
     VolumeDown { delta: Option<f32> },
     ToggleMute,
+    NextTrack,
+    PreviousTrack,
+    TogglePlayPause,
+    ToggleMicMute,
+    TakeScreenshot,
+    OpenCalculator,
     Mute,
     Unmute,
 
@@ -596,7 +604,8 @@ fn handle_command(cmd: WsCommand) -> anyhow::Result<serde_json::Value> {
     match cmd {
         WsCommand::GetStatus => {
             let (vol, muted) = audio::get_volume_and_mute()?;
-            Ok(json!({"type":"status","volume":vol,"muted":muted}))
+            let mic_muted = audio::get_mic_mute()?;
+            Ok(json!({"type":"status","volume":vol,"muted":muted,"mic_muted":mic_muted}))
         }
         WsCommand::SetVolume { level } => {
             let level = level.clamp(0.0, 1.0);
@@ -636,9 +645,35 @@ fn handle_command(cmd: WsCommand) -> anyhow::Result<serde_json::Value> {
             let (vol, muted) = audio::get_volume_and_mute()?;
             Ok(json!({"type":"ok","action":"unmute","volume":vol,"muted":muted}))
         }
-
+        WsCommand::NextTrack => {
+            media::next_track()?;
+            Ok(json!({"type":"ok","action":"next_track"}))
+        }
+        WsCommand::PreviousTrack => {
+            media::previous_track()?;
+            Ok(json!({"type":"ok","action":"previous_track"}))
+        }
+        WsCommand::TogglePlayPause => {
+            media::toggle_play_pause()?;
+            Ok(json!({"type":"ok","action":"toggle_play_pause"}))
+        }
         WsCommand::Pair { .. } | WsCommand::Auth { .. } => {
             Ok(json!({"type":"error","message":"pair/auth_not_allowed_here"}))
+        }
+        WsCommand::ToggleMicMute => {
+            let mic_muted = audio::get_mic_mute()?;
+            audio::set_mic_mute(!mic_muted)?;
+            let (vol, muted) = audio::get_volume_and_mute()?;
+            let mic_muted = audio::get_mic_mute()?;
+            Ok(json!({"type":"ok","action":"toggle_mic_mute","volume":vol,"muted":muted,"mic_muted":mic_muted}))
+        }
+        WsCommand::TakeScreenshot => {
+            system::take_screenshot()?;
+            Ok(json!({"type":"ok","action":"take_screenshot"}))
+        }
+        WsCommand::OpenCalculator => {
+            system::open_calculator()?;
+            Ok(json!({"type":"ok","action":"open_calculator"}))
         }
     }
 }

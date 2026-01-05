@@ -27,9 +27,6 @@ const connTitle = $("connTitle");
 const connSub = $("connSub");
 const pairHint = $("pairHint");
 const editHint = $("editHint");
-const pagePrev = $("pagePrev");
-const pageNext = $("pageNext");
-const pageNum = $("pageNum");
 
 // Pair modal
 const pairModal = $("pairModal");
@@ -42,6 +39,8 @@ const pairError = $("pairError");
 const audioState = {
   muted: false,
   volume: 1.0,
+  playing: true,
+  micMuted: false,
 };
 
 // Debug log
@@ -82,6 +81,16 @@ function loadRecents() {
   }
 }
 
+function showHomeError(msg) {
+  scanStatus.textContent = msg;
+  scanStatus.style.color = "rgba(255,120,120,0.95)";
+  setTimeout(() => {
+    // restore muted look
+    scanStatus.style.color = "";
+  }, 4000);
+}
+
+
 function saveRecents(arr) {
   localStorage.setItem(RECENTS_KEY, JSON.stringify(arr));
 }
@@ -108,18 +117,39 @@ function forgetRecent(url) {
 // --- Layout store (modular grid) ---
 const LAYOUT_KEY = "fossdeck_layout_v1";
 const DEFAULT_LAYOUT = [
-  "toggle_mute",
+  "previous_track",
+  "toggle_play_pause",
+  "next_track",
   "volume_down",
+  "toggle_mute",
   "volume_up",
+  "toggle_mic_mute",
+  "take_screenshot",
+  "open_calculator",
 ];
 
 function loadLayout() {
+  let arr = null;
+
   try {
     const s = localStorage.getItem(LAYOUT_KEY);
-    const arr = s ? JSON.parse(s) : null;
-    if (Array.isArray(arr) && arr.length) return arr;
+    const parsed = s ? JSON.parse(s) : null;
+    if (Array.isArray(parsed) && parsed.length) arr = parsed;
   } catch {}
-  return [...DEFAULT_LAYOUT];
+
+  // start from saved layout or default
+  const layout = arr ? [...arr] : [...DEFAULT_LAYOUT];
+
+  // migrate: append any actions from DEFAULT_LAYOUT that are missing
+  const set = new Set(layout);
+  for (const id of DEFAULT_LAYOUT) {
+    if (!set.has(id)) layout.push(id);
+  }
+
+  // optionally persist the migrated layout
+  saveLayout(layout);
+
+  return layout;
 }
 
 function saveLayout(arr) {
@@ -158,6 +188,62 @@ const ACTIONS = {
     enabled: () => isPaired,
     run: () => sendCmd({ cmd: "volume_down", delta: 0.05 }),
   },
+  previous_track: {
+    id: "previous_track",
+    title: "Previous",
+    icon: "assets/previous.png",
+    enabled: () => isPaired,
+    run: () => sendCmd({ cmd: "previous_track" }),
+  },
+
+  next_track: {
+    id: "next_track",
+    title: "Next",
+    icon: "assets/next.png",
+    enabled: () => isPaired,
+    run: () => sendCmd({ cmd: "next_track" }),
+  },
+
+  toggle_play_pause: {
+    id: "toggle_play_pause",
+    title: "Play/Pause",
+    icon: () => (audioState.playing ? "assets/pause.png" : "assets/resume.png"),
+    enabled: () => isPaired,
+    run: () => {
+      // optimistic UI toggle
+      audioState.playing = !audioState.playing;
+      renderTiles();
+
+      sendCmd({ cmd: "toggle_play_pause" });
+    },
+  },
+  toggle_mic_mute: {
+    id: "toggle_mic_mute",
+    title: "Mic",
+    icon: () => (audioState.micMuted ? "assets/mic_muted.png" : "assets/mic.png"),
+    enabled: () => isPaired,
+    run: () => {
+      // optimistic UI update
+      audioState.micMuted = !audioState.micMuted;
+      renderTiles();
+      sendCmd({ cmd: "toggle_mic_mute" });
+    },
+  },
+  take_screenshot: {
+    id: "take_screenshot",
+    title: "Screenshot",
+    icon: "assets/screenshot.png",
+    enabled: () => isPaired,
+    run: () => sendCmd({ cmd: "take_screenshot" }),
+  },
+
+  open_calculator: {
+    id: "open_calculator",
+    title: "Calculator",
+    icon: "assets/calculator.png",
+    enabled: () => isPaired,
+    run: () => sendCmd({ cmd: "open_calculator" }),
+  },
 };
 
 // --- UI helpers ---
@@ -173,7 +259,7 @@ function showConnected() {
 
 function setConnectedMeta(title, sub) {
   connTitle.textContent = title || "Connected";
-  connSub.textContent = sub || "—";
+  connSub.textContent = sub || "";
 }
 
 function openPairModal() {
@@ -225,7 +311,6 @@ function renderRecents() {
     row.innerHTML = `
       <div class="left">
         <div class="name">${escapeHtml(pc.name || "PC")}</div>
-        <div class="sub">${escapeHtml(pc.url)}</div>
       </div>
       <div class="row-actions">
         <button class="btn small primary" data-act="connect">Connect</button>
@@ -261,7 +346,6 @@ function renderAvailable(hosts) {
     row.innerHTML = `
       <div class="left">
         <div class="name">${escapeHtml(name)}</div>
-        <div class="sub">${escapeHtml(url)}</div>
       </div>
       <div class="row-actions">
         <button class="btn small primary">Connect</button>
@@ -316,22 +400,11 @@ scanBtn.addEventListener("click", async () => {
 });
 
 directBtn.addEventListener("click", () => {
-  const v = prompt("Enter PC IP (or IP:port) or full ws:// URL:", "");
+  const v = prompt("Enter IP address of the PC:", "");
   if (v === null) return;
   const url = normalizeDirectInputToWs(v);
   if (!url) return;
   connect(url, url);
-});
-
-// --- Connected page "pages" (simple placeholder; can expand later) ---
-let currentPage = 1;
-pagePrev.addEventListener("click", () => {
-  if (currentPage > 1) currentPage--;
-  pageNum.textContent = String(currentPage);
-});
-pageNext.addEventListener("click", () => {
-  currentPage++;
-  pageNum.textContent = String(currentPage);
 });
 
 // --- Edit mode for modular tiles ---
@@ -366,31 +439,51 @@ pairConfirm.addEventListener("click", () => {
 function connect(url, name) {
   stopHeartbeat();
 
+  // Close any existing socket
   if (ws) {
     try { ws.close(); } catch {}
     ws = null;
   }
 
+  // Basic URL validation (quick feedback for bad direct input)
+  if (!/^wss?:\/\/.+/i.test(url)) {
+    showHomeError("Invalid address. Use ws://IP:port/ws");
+    return;
+  }
+
+  // Set "connecting" UI on Home (don't navigate yet)
+  scanStatus.textContent = `Connecting to ${name || "PC"}…`;
+  scanStatus.style.color = ""; // reset any previous red state
   currentUrl = url;
   currentPcName = name || url;
   isPaired = false;
-  pairHint.classList.add("hidden");
 
-  setConnectedMeta(currentPcName, url);
-  showConnected();
-  renderTiles();
-
+  // Create WS
   ws = new WebSocket(url);
 
+  // If it doesn't connect within a few seconds, treat as offline
+  const connectTimeout = setTimeout(() => {
+    if (ws && ws.readyState !== WebSocket.OPEN) {
+      try { ws.close(); } catch {}
+      ws = null;
+      showHomeError("Could not connect. PC might be offline or the address is wrong.");
+    }
+  }, 3500);
+
   ws.onopen = () => {
-    log("ws open");
+    clearTimeout(connectTimeout);
 
+    // NOW we know the server is reachable, so navigate
+    setConnectedMeta(currentPcName, "");
+    showConnected();
+    renderTiles();
+
+    // Try auto-auth if token exists; else prompt pairing
     authToken = localStorage.getItem("fossdeck_token");
-
     if (authToken) {
       sendCmd({ cmd: "auth", device_id: deviceId, token: authToken });
 
-      // If auth doesn't succeed quickly, show modal (covers cases where server is slow)
+      // If auth doesn't succeed quickly, prompt for pairing
       setTimeout(() => {
         if (!isPaired && ws && ws.readyState === WebSocket.OPEN) {
           pairHint.classList.remove("hidden");
@@ -398,7 +491,6 @@ function connect(url, name) {
         }
       }, 600);
     } else {
-      // No token => immediately prompt for pairing
       pairHint.classList.remove("hidden");
       openPairModal();
     }
@@ -408,20 +500,12 @@ function connect(url, name) {
     let obj;
     try { obj = JSON.parse(ev.data); } catch { return; }
 
-    if (obj.type === "hello") {
-      // ok
-      return;
-    }
+    if (obj.type === "hello") return;
 
     if (obj.type === "status") {
-      if (typeof obj.muted === "boolean") {
-        audioState.muted = obj.muted;
-      }
-      if (typeof obj.volume === "number") {
-        audioState.volume = obj.volume;
-      }
-
-      // Re-render tiles so mute icon updates
+      if (typeof obj.muted === "boolean") audioState.muted = obj.muted;
+      if (typeof obj.volume === "number") audioState.volume = obj.volume;
+      if (typeof obj.mic_muted === "boolean") audioState.micMuted = obj.mic_muted;
       renderTiles();
       return;
     }
@@ -437,13 +521,11 @@ function connect(url, name) {
     }
 
     if (obj.type === "auth_error") {
-      // token invalid -> clear and require pairing again
       localStorage.removeItem("fossdeck_token");
       authToken = null;
       isPaired = false;
       pairHint.classList.remove("hidden");
       renderTiles();
-      return;
       openPairModal();
       return;
     }
@@ -469,7 +551,6 @@ function connect(url, name) {
     }
 
     if (obj.type === "rate_limited") {
-      // nice UX for your new server feature
       const sec = obj.retry_after_secs ?? 0;
       pairError.textContent = `Rate limited (${obj.reason}). Try again in ${sec}s.`;
       return;
@@ -484,17 +565,31 @@ function connect(url, name) {
     }
 
     if (obj.type === "shutdown") {
-      disconnect();
+      disconnect(true);
+      showHomeError("Server shut down.");
       return;
     }
   };
 
-  ws.onclose = () => {
+  ws.onerror = () => {
+    clearTimeout(connectTimeout);
+    // If we never reached onopen, we are still on Home -> show error there.
+    if (!connectedScreen || connectedScreen.classList.contains("hidden")) {
+      showHomeError("Connection failed. PC offline or invalid address.");
+    }
     disconnect(true);
   };
 
-  ws.onerror = () => {
-    // keep screen but show not connected
+  ws.onclose = () => {
+    clearTimeout(connectTimeout);
+
+    // If we never reached onopen, keep user on Home with error
+    if (!connectedScreen || connectedScreen.classList.contains("hidden")) {
+      showHomeError("Could not connect. PC offline or invalid address.");
+      return;
+    }
+
+    // If we were connected already, just go back home
     disconnect(true);
   };
 }
