@@ -1,5 +1,5 @@
 #![cfg(windows)] // this binary is Windows-only
-
+#![windows_subsystem = "windows"]
 mod gui;
 mod server;
 mod audio;
