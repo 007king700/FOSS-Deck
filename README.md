@@ -29,34 +29,6 @@ This repo contains:
 
 ---
 
-## Prerequisites
-
-### Windows (for the PC server)
-
-- **Rust** (stable)
-  ```powershell
-  winget install --id Rustlang.Rustup -e
-  ```
-
-- **Visual Studio Build Tools + Windows SDK** (for linking & COM)
-  ```powershell
-  winget install --id Microsoft.VisualStudio.2022.BuildTools -e --interactive
-  ```
-  During the installer, select:
-  - **C++ build tools**
-  - **Windows 11 SDK**
-
-> If you saw `link.exe not found` or COM linking errors, this fixes it.
-
-### Android (for the mobile app)
-
-- **Android Studio** (Narwhal or newer) – includes SDK/Platform Tools
-- **Node.js** LTS + npm
-- Enable **Windows Developer Mode** (Settings → For developers) to allow symlinks (Tauri creates symlinks for JNI libs).
-- A device or emulator.
-
----
-
 ## Getting started
 
 Just download the builds for Windows and Android.
